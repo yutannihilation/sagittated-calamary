@@ -1,35 +1,25 @@
 // original code: https://bl.ocks.org/mbostock/3883245
 
-import * as d3_axis from "d3-axis";
-import * as d3_array from "d3-array";
-import * as d3_dsv from "d3-dsv";
-import * as d3_annotation from "d3-svg-annotation";
-import * as d3_request from "d3-request";
-import * as d3_scale from "d3-scale";
-import * as d3_selection from "d3-selection";
-import * as d3_shape from "d3-shape";
-import * as d3_time_format from "d3-time-format";
-
-var svg = d3_selection.select("svg"),
+var svg = d3.select("svg"),
     margin = { top: 20, right: 20, bottom: 30, left: 50 },
     width = +svg.attr("width") - margin.left - margin.right,
     height = +svg.attr("height") - margin.top - margin.bottom,
     g = svg.append("g").attr("transform", "translate(" + margin.left + ", " + margin.top + ")");
 
-var parseTime = d3_time_format.timeParse("%d-%b-%y");
+var parseTime = d3.timeParse("%d-%b-%y");
 
-var x = d3_scale.scaleTime()
+var x = d3.scaleTime()
     .rangeRound([0, width]);
 
-var y = d3_scale.scaleLinear()
+var y = d3.scaleLinear()
     .rangeRound([height, 0]);
 
-var line = d3_shape.line()
+var line = d3.line()
     .x(d => x(d.date))
     .y(d => y(d.close));
 
 
-d3_request.tsv(
+d3.tsv(
     "data.tsv",
     d => {
         d.date = parseTime(d.date);
@@ -40,17 +30,17 @@ d3_request.tsv(
         if (error) throw error;
 
 
-        x.domain(d3_array.extent(data, d => d.date));
-        y.domain(d3_array.extent(data, d => d.close));
+        x.domain(d3.extent(data, d => d.date));
+        y.domain(d3.extent(data, d => d.close));
 
         g.append("g")
             .attr("transform", "translate(0, " + height + ")")
-            .call(d3_axis.axisBottom(x))
+            .call(d3.axisBottom(x))
             .select(".domain")
             .remove();
 
         g.append("g")
-            .call(d3_axis.axisLeft(y))
+            .call(d3.axisLeft(y))
             .append("text")
             .attr("fill", "#000")
             .attr("transform", "rotate(-90)")
@@ -68,8 +58,8 @@ d3_request.tsv(
             .attr("stroke-width", 1.5)
             .attr("d", line);
 
-        var makeAnnotations = d3_annotation.annotation()
-            .type(d3_annotation.annotationCalloutCircle)
+        var makeAnnotations = d3.annotation()
+            .type(d3.annotationCalloutCircle)
             .accessors({
                 x: d => x(parseTime(d.date)),
                 y: d => y(d.close)
@@ -91,7 +81,7 @@ d3_request.tsv(
                 }
             ])
 
-        d3_selection.select("svg")
+        d3.select("svg")
             .append("g")
             .attr("class", "annotation-group")
             .call(makeAnnotations)
