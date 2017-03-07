@@ -5736,10 +5736,10 @@ tsv$1("data.tsv", function (d) {
 }, function (error, data) {
     if (error) throw error;
 
-    y.domain(extent(data, function (d) {
+    x.domain(extent(data, function (d) {
         return d.date;
     }));
-    x.domain(extent(data, function (d) {
+    y.domain(extent(data, function (d) {
         return d.close;
     }));
 

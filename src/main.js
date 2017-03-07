@@ -38,8 +38,8 @@ d => {
 (error, data) => {
     if (error) throw error;
     
-    y.domain(d3_array.extent(data, d => d.date));
-    x.domain(d3_array.extent(data, d => d.close));
+    x.domain(d3_array.extent(data, d => d.date));
+    y.domain(d3_array.extent(data, d => d.close));
     
     g.append("g")
     .attr("transform", "translate(0, " + height + ")")
