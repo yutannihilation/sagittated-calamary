@@ -92,7 +92,7 @@ d3Request.tsv(
                 }
             ])
 
-        d3.select("svg")
+        d3Selection.select("svg")
             .append("g")
             .attr("class", "annotation-group")
             .call(makeAnnotations)

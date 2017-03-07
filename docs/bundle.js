@@ -9622,5 +9622,5 @@ tsv$1("data.tsv", function (d) {
         }
     }]);
 
-    d3.select("svg").append("g").attr("class", "annotation-group").call(makeAnnotations);
+    select$1("svg").append("g").attr("class", "annotation-group").call(makeAnnotations);
 });
