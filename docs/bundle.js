@@ -381,89 +381,6 @@ function length(d) {
   return d.length;
 }
 
-var noop = {value: function() {}};
-
-function dispatch() {
-  for (var i = 0, n = arguments.length, _ = {}, t; i < n; ++i) {
-    if (!(t = arguments[i] + "") || (t in _)) throw new Error("illegal type: " + t);
-    _[t] = [];
-  }
-  return new Dispatch(_);
-}
-
-function Dispatch(_) {
-  this._ = _;
-}
-
-function parseTypenames(typenames, types) {
-  return typenames.trim().split(/^|\s+/).map(function(t) {
-    var name = "", i = t.indexOf(".");
-    if (i >= 0) name = t.slice(i + 1), t = t.slice(0, i);
-    if (t && !types.hasOwnProperty(t)) throw new Error("unknown type: " + t);
-    return {type: t, name: name};
-  });
-}
-
-Dispatch.prototype = dispatch.prototype = {
-  constructor: Dispatch,
-  on: function(typename, callback) {
-    var _ = this._,
-        T = parseTypenames(typename + "", _),
-        t,
-        i = -1,
-        n = T.length;
-
-    // If no callback was specified, return the callback of the given type and name.
-    if (arguments.length < 2) {
-      while (++i < n) if ((t = (typename = T[i]).type) && (t = get(_[t], typename.name))) return t;
-      return;
-    }
-
-    // If a type was specified, set the callback for the given type and name.
-    // Otherwise, if a null callback was specified, remove callbacks of the given name.
-    if (callback != null && typeof callback !== "function") throw new Error("invalid callback: " + callback);
-    while (++i < n) {
-      if (t = (typename = T[i]).type) _[t] = set$1(_[t], typename.name, callback);
-      else if (callback == null) for (t in _) _[t] = set$1(_[t], typename.name, null);
-    }
-
-    return this;
-  },
-  copy: function() {
-    var copy = {}, _ = this._;
-    for (var t in _) copy[t] = _[t].slice();
-    return new Dispatch(copy);
-  },
-  call: function(type, that) {
-    if ((n = arguments.length - 2) > 0) for (var args = new Array(n), i = 0, n, t; i < n; ++i) args[i] = arguments[i + 2];
-    if (!this._.hasOwnProperty(type)) throw new Error("unknown type: " + type);
-    for (t = this._[type], i = 0, n = t.length; i < n; ++i) t[i].value.apply(that, args);
-  },
-  apply: function(type, that, args) {
-    if (!this._.hasOwnProperty(type)) throw new Error("unknown type: " + type);
-    for (var t = this._[type], i = 0, n = t.length; i < n; ++i) t[i].value.apply(that, args);
-  }
-};
-
-function get(type, name) {
-  for (var i = 0, n = type.length, c; i < n; ++i) {
-    if ((c = type[i]).name === name) {
-      return c.value;
-    }
-  }
-}
-
-function set$1(type, name, callback) {
-  for (var i = 0, n = type.length; i < n; ++i) {
-    if (type[i].name === name) {
-      type[i] = noop, type = type.slice(0, i).concat(type.slice(i + 1));
-      break;
-    }
-  }
-  if (callback != null) type.push({name: name, value: callback});
-  return type;
-}
-
 function objectConverter(columns) {
   return new Function("d", "return {" + columns.map(function(name, i) {
     return JSON.stringify(name) + ": d[" + i + "]";
@@ -704,7 +621,7 @@ function contextListener(listener, index, group) {
   };
 }
 
-function parseTypenames$1(typenames) {
+function parseTypenames(typenames) {
   return typenames.trim().split(/^|\s+/).map(function(t) {
     var name = "", i = t.indexOf(".");
     if (i >= 0) name = t.slice(i + 1), t = t.slice(0, i);
@@ -748,7 +665,7 @@ function onAdd(typename, value, capture) {
 }
 
 var selection_on = function(typename, value, capture) {
-  var typenames = parseTypenames$1(typename + ""), i, n = typenames.length, t;
+  var typenames = parseTypenames(typename + ""), i, n = typenames.length, t;
 
   if (arguments.length < 2) {
     var on = this.node().__on;
@@ -1476,6 +1393,89 @@ Selection.prototype = selection.prototype = {
   on: selection_on,
   dispatch: selection_dispatch
 };
+
+var noop = {value: function() {}};
+
+function dispatch() {
+  for (var i = 0, n = arguments.length, _ = {}, t; i < n; ++i) {
+    if (!(t = arguments[i] + "") || (t in _)) throw new Error("illegal type: " + t);
+    _[t] = [];
+  }
+  return new Dispatch(_);
+}
+
+function Dispatch(_) {
+  this._ = _;
+}
+
+function parseTypenames$1(typenames, types) {
+  return typenames.trim().split(/^|\s+/).map(function(t) {
+    var name = "", i = t.indexOf(".");
+    if (i >= 0) name = t.slice(i + 1), t = t.slice(0, i);
+    if (t && !types.hasOwnProperty(t)) throw new Error("unknown type: " + t);
+    return {type: t, name: name};
+  });
+}
+
+Dispatch.prototype = dispatch.prototype = {
+  constructor: Dispatch,
+  on: function(typename, callback) {
+    var _ = this._,
+        T = parseTypenames$1(typename + "", _),
+        t,
+        i = -1,
+        n = T.length;
+
+    // If no callback was specified, return the callback of the given type and name.
+    if (arguments.length < 2) {
+      while (++i < n) if ((t = (typename = T[i]).type) && (t = get$1(_[t], typename.name))) return t;
+      return;
+    }
+
+    // If a type was specified, set the callback for the given type and name.
+    // Otherwise, if a null callback was specified, remove callbacks of the given name.
+    if (callback != null && typeof callback !== "function") throw new Error("invalid callback: " + callback);
+    while (++i < n) {
+      if (t = (typename = T[i]).type) _[t] = set$1(_[t], typename.name, callback);
+      else if (callback == null) for (t in _) _[t] = set$1(_[t], typename.name, null);
+    }
+
+    return this;
+  },
+  copy: function() {
+    var copy = {}, _ = this._;
+    for (var t in _) copy[t] = _[t].slice();
+    return new Dispatch(copy);
+  },
+  call: function(type, that) {
+    if ((n = arguments.length - 2) > 0) for (var args = new Array(n), i = 0, n, t; i < n; ++i) args[i] = arguments[i + 2];
+    if (!this._.hasOwnProperty(type)) throw new Error("unknown type: " + type);
+    for (t = this._[type], i = 0, n = t.length; i < n; ++i) t[i].value.apply(that, args);
+  },
+  apply: function(type, that, args) {
+    if (!this._.hasOwnProperty(type)) throw new Error("unknown type: " + type);
+    for (var t = this._[type], i = 0, n = t.length; i < n; ++i) t[i].value.apply(that, args);
+  }
+};
+
+function get$1(type, name) {
+  for (var i = 0, n = type.length, c; i < n; ++i) {
+    if ((c = type[i]).name === name) {
+      return c.value;
+    }
+  }
+}
+
+function set$1(type, name, callback) {
+  for (var i = 0, n = type.length; i < n; ++i) {
+    if (type[i].name === name) {
+      type[i] = noop, type = type.slice(0, i).concat(type.slice(i + 1));
+      break;
+    }
+  }
+  if (callback != null) type.push({name: name, value: callback});
+  return type;
+}
 
 var xhtml$1 = "http://www.w3.org/1999/xhtml";
 
@@ -3733,7 +3733,7 @@ var asyncGenerator = function () {
     return target;
   };
 
-  var get$1 = function get$1(object, property, receiver) {
+  var get = function get(object, property, receiver) {
     if (object === null) object = Function.prototype;
     var desc = Object.getOwnPropertyDescriptor(object, property);
 
@@ -3743,7 +3743,7 @@ var asyncGenerator = function () {
       if (parent === null) {
         return undefined;
       } else {
-        return get$1(parent, property, receiver);
+        return get(parent, property, receiver);
       }
     } else if ("value" in desc) {
       return desc.value;
@@ -3855,7 +3855,7 @@ var Annotation = function () {
       }
     }, {
       key: 'className',
-      get: function get$1() {
+      get: function get() {
         return this._className;
       },
       set: function set(className) {
@@ -3864,7 +3864,7 @@ var Annotation = function () {
       }
     }, {
       key: 'x',
-      get: function get$1() {
+      get: function get() {
         return this._x;
       },
       set: function set(x) {
@@ -3873,7 +3873,7 @@ var Annotation = function () {
       }
     }, {
       key: 'y',
-      get: function get$1() {
+      get: function get() {
         return this._y;
       },
       set: function set(y) {
@@ -3882,7 +3882,7 @@ var Annotation = function () {
       }
     }, {
       key: 'dx',
-      get: function get$1() {
+      get: function get() {
         return this._dx;
       },
       set: function set(dx) {
@@ -3891,7 +3891,7 @@ var Annotation = function () {
       }
     }, {
       key: 'dy',
-      get: function get$1() {
+      get: function get() {
         return this._dy;
       },
       set: function set(dy) {
@@ -3900,7 +3900,7 @@ var Annotation = function () {
       }
     }, {
       key: 'offset',
-      get: function get$1() {
+      get: function get() {
         return { x: this._dx, y: this._dy };
       },
       set: function set(_ref2) {
@@ -3913,7 +3913,7 @@ var Annotation = function () {
       }
     }, {
       key: 'position',
-      get: function get$1() {
+      get: function get() {
         return { x: this._x, y: this._y };
       },
       set: function set(_ref3) {
@@ -3926,7 +3926,7 @@ var Annotation = function () {
       }
     }, {
       key: 'translation',
-      get: function get$1() {
+      get: function get() {
         return {
           x: this._x + this._dx,
           y: this._y + this._dy
@@ -3934,7 +3934,7 @@ var Annotation = function () {
       }
     }, {
       key: 'json',
-      get: function get$1() {
+      get: function get() {
         var json = {
           x: this._x,
           y: this._y,
@@ -4032,7 +4032,7 @@ var AnnotationCollection = function () {
       }
     }, {
       key: "json",
-      get: function get$1() {
+      get: function get() {
         var _this2 = this;
 
         return this.annotations.map(function (a) {
@@ -4050,7 +4050,7 @@ var AnnotationCollection = function () {
       }
     }, {
       key: "noteNodes",
-      get: function get$1() {
+      get: function get() {
         return this.annotations.map(function (a) {
           return _extends({}, a.type.getNoteBBoxOffset(), { positionX: a.x, positionY: a.y });
         });
@@ -5026,35 +5026,35 @@ var Type = function () {
       createClass(customType, [{
         key: 'className',
         value: function className() {
-          return (typeSettings.className || '') + ' ' + (get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this) && get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this).call(this) || '');
+          return (typeSettings.className || '') + ' ' + (get(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this) && get(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this).call(this) || '');
         }
       }, {
         key: 'drawSubject',
         value: function drawSubject(context) {
           this.typeSettings.subject = Object.assign({}, typeSettings.subject, this.typeSettings.subject);
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawSubject', this).call(this, _extends({}, context, this.typeSettings.subject));
+          return get(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawSubject', this).call(this, _extends({}, context, this.typeSettings.subject));
         }
       }, {
         key: 'drawConnector',
         value: function drawConnector(context, subjectContext) {
           this.typeSettings.connector = Object.assign({}, typeSettings.connector, this.typeSettings.connector);
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawConnector', this).call(this, _extends({}, context, typeSettings.connector, this.typeSettings.connector));
+          return get(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawConnector', this).call(this, _extends({}, context, typeSettings.connector, this.typeSettings.connector));
         }
       }, {
         key: 'drawNote',
         value: function drawNote(context) {
           this.typeSettings.note = Object.assign({}, typeSettings.note, this.typeSettings.note);
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNote', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
+          return get(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNote', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
         }
       }, {
         key: 'drawNoteContent',
         value: function drawNoteContent(context) {
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNoteContent', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
+          return get(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNoteContent', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
         }
       }], [{
         key: 'init',
         value: function init(annotation, accessors) {
-          get$1(customType.__proto__ || Object.getPrototypeOf(customType), 'init', this).call(this, annotation, accessors);
+          get(customType.__proto__ || Object.getPrototypeOf(customType), 'init', this).call(this, annotation, accessors);
           if (_init) {
             annotation = _init(annotation, accessors);
           }
@@ -5170,7 +5170,7 @@ var Type = function () {
     createClass(ThresholdMap, [{
       key: 'mapY',
       value: function mapY(accessors) {
-        get$1(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapY', this).call(this, accessors);
+        get(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapY', this).call(this, accessors);
         var a = this.annotation;
         if ((a.subject.x1 || a.subject.x2) && a.data && accessors.y) {
           a.y = accessors.y(a.data);
@@ -5179,7 +5179,7 @@ var Type = function () {
     }, {
       key: 'mapX',
       value: function mapX(accessors) {
-        get$1(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapX', this).call(this, accessors);
+        get(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapX', this).call(this, accessors);
         var a = this.annotation;
         if ((a.subject.y1 || a.subject.y2) && a.data && accessors.x) {
           a.x = accessors.x(a.data);
