@@ -39,6 +39,7 @@ d3_request.tsv(
     (error, data) => {
         if (error) throw error;
 
+
         x.domain(d3_array.extent(data, d => d.date));
         y.domain(d3_array.extent(data, d => d.close));
 
@@ -66,5 +67,33 @@ d3_request.tsv(
             .attr("stroke-linecap", "round")
             .attr("stroke-width", 1.5)
             .attr("d", line);
+
+        var makeAnnotations = d3_annotation.annotation()
+            .type(d3_annotation.annotationCalloutCircle)
+            .accessors({
+                x: d => x(parseTime(d.date)),
+                y: d => y(d.close)
+            })
+            .accessorsInverse({
+                date: d => timeFormat(x.invert(d.x)),
+                close: d => y.invert(d.y)
+            })
+            .annotations([
+                {
+                    note: {label: "This is awesome!", title: "Awesome"},
+                    data: data[100],
+                    dy: 137,
+                    dx: 162,
+                    subject: {
+                        radius: 50,
+                        radiusPadding: 5
+                    }
+                }
+            ])
+
+        d3.select("svg")
+            .append("g")
+            .attr("class", "annotation-group")
+            .call(makeAnnotations)
     }
 );
