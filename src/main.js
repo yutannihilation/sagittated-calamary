@@ -48,7 +48,7 @@ d => {
     .remove();
     
     g.append("g")
-    .call(d3.axisLeft(y))
+    .call(d3_axis.axisLeft(y))
     .append("text")
     .attr("fill", "#000")
     .attr("transform", "rotate(-90)")
