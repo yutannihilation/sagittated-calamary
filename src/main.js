@@ -81,7 +81,7 @@ d3.tsv(
                         radiusPadding: 5
                     }
                 }
-            ])
+            ]);
 
         d3.select("svg")
             .append("g")
