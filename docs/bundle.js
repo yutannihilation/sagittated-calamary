@@ -1,3 +1,9 @@
+(function (global, factory) {
+	typeof exports === 'object' && typeof module !== 'undefined' ? factory() :
+	typeof define === 'function' && define.amd ? define(factory) :
+	(factory());
+}(this, (function () { 'use strict';
+
 var slice = Array.prototype.slice;
 
 var identity = function(x) {
@@ -7148,3 +7154,5 @@ tsv$1("data.tsv", function (d) {
 
     select$1("svg").append("g").attr("class", "annotation-group").call(makeAnnotations);
 });
+
+})));
