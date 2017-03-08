@@ -1,6 +1,10 @@
 // original code: https://bl.ocks.org/mbostock/3883245
 
 import * as d3 from './d3-bundle'
+import * as d3Dispatch from 'd3-dispatch'
+import * as d3Drag from 'd3-drag'
+import * as d3Shape from 'd3-shape'
+import * as d3Selection from 'd3-selection'
 
 var svg = d3.select("svg"),
     margin = { top: 20, right: 20, bottom: 30, left: 50 },
