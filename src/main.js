@@ -63,19 +63,19 @@ d3.tsv(
         var makeAnnotations = d3.annotation()
             .type(d3.annotationCalloutCircle)
             .accessors({
-                x: d => x(parseTime(d.date)),
+                x: d => x(d.date),
                 y: d => y(d.close)
             })
             .accessorsInverse({
-                date: d => timeFormat(x.invert(d.x)),
+                date: d => x.invert(d.x),
                 close: d => y.invert(d.y)
             })
             .annotations([
                 {
                     note: {label: "This is awesome!", title: "Awesome"},
-                    data: data[100],
-                    dy: 137,
-                    dx: 162,
+                    data: data[1000],
+                    dy: 200,
+                    dx: 80,
                     subject: {
                         radius: 50,
                         radiusPadding: 5

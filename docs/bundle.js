@@ -3295,6 +3295,43 @@ var selection_on = function(typename, value, capture) {
   return this;
 };
 
+function customEvent(event1, listener, that, args) {
+  var event0 = event;
+  event1.sourceEvent = event;
+  event = event1;
+  try {
+    return listener.apply(that, args);
+  } finally {
+    event = event0;
+  }
+}
+
+var sourceEvent = function() {
+  var current = event, source;
+  while (source = current.sourceEvent) current = source;
+  return current;
+};
+
+var point$1 = function(node, event) {
+  var svg = node.ownerSVGElement || node;
+
+  if (svg.createSVGPoint) {
+    var point = svg.createSVGPoint();
+    point.x = event.clientX, point.y = event.clientY;
+    point = point.matrixTransform(node.getScreenCTM().inverse());
+    return [point.x, point.y];
+  }
+
+  var rect = node.getBoundingClientRect();
+  return [event.clientX - rect.left - node.clientLeft, event.clientY - rect.top - node.clientTop];
+};
+
+var mouse = function(node) {
+  var event = sourceEvent();
+  if (event.changedTouches) event = event.changedTouches[0];
+  return point$1(node, event);
+};
+
 function none() {}
 
 var selector = function(selector) {
@@ -3988,6 +4025,18 @@ var select = function(selector) {
   return typeof selector === "string"
       ? new Selection([[document.querySelector(selector)]], [document.documentElement])
       : new Selection([[selector]], root);
+};
+
+var touch = function(node, touches, identifier) {
+  if (arguments.length < 3) identifier = touches, touches = sourceEvent().changedTouches;
+
+  for (var i = 0, n = touches ? touches.length : 0, touch; i < n; ++i) {
+    if ((touch = touches[i]).identifier === identifier) {
+      return point$1(node, touch);
+    }
+  }
+
+  return null;
 };
 
 var pi = Math.PI;
@@ -5161,10 +5210,478 @@ Selection$1.prototype = selection$2.prototype = {
   dispatch: selection_dispatch$1
 };
 
+var select$1 = function(selector) {
+  return typeof selector === "string"
+      ? new Selection$1([[document.querySelector(selector)]], [document.documentElement])
+      : new Selection$1([[selector]], root$1);
+};
+
+function nopropagation() {
+  event.stopImmediatePropagation();
+}
+
+var noevent = function() {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+};
+
+var nodrag = function(view) {
+  var root = view.document.documentElement,
+      selection$$1 = select(view).on("dragstart.drag", noevent, true);
+  if ("onselectstart" in root) {
+    selection$$1.on("selectstart.drag", noevent, true);
+  } else {
+    root.__noselect = root.style.MozUserSelect;
+    root.style.MozUserSelect = "none";
+  }
+};
+
+function yesdrag(view, noclick) {
+  var root = view.document.documentElement,
+      selection$$1 = select(view).on("dragstart.drag", null);
+  if (noclick) {
+    selection$$1.on("click.drag", noevent, true);
+    setTimeout(function() { selection$$1.on("click.drag", null); }, 0);
+  }
+  if ("onselectstart" in root) {
+    selection$$1.on("selectstart.drag", null);
+  } else {
+    root.style.MozUserSelect = root.__noselect;
+    delete root.__noselect;
+  }
+}
+
+var constant$6 = function(x) {
+  return function() {
+    return x;
+  };
+};
+
+function DragEvent(target, type, subject, id, active, x, y, dx, dy, dispatch) {
+  this.target = target;
+  this.type = type;
+  this.subject = subject;
+  this.identifier = id;
+  this.active = active;
+  this.x = x;
+  this.y = y;
+  this.dx = dx;
+  this.dy = dy;
+  this._ = dispatch;
+}
+
+DragEvent.prototype.on = function() {
+  var value = this._.on.apply(this._, arguments);
+  return value === this._ ? this : value;
+};
+
+// Ignore right-click, since that should open the context menu.
+function defaultFilter() {
+  return !event.button;
+}
+
+function defaultContainer() {
+  return this.parentNode;
+}
+
+function defaultSubject(d) {
+  return d == null ? {x: event.x, y: event.y} : d;
+}
+
+var drag = function() {
+  var filter = defaultFilter,
+      container = defaultContainer,
+      subject = defaultSubject,
+      gestures = {},
+      listeners = dispatch("start", "drag", "end"),
+      active = 0,
+      mousemoving,
+      touchending;
+
+  function drag(selection$$1) {
+    selection$$1
+        .on("mousedown.drag", mousedowned)
+        .on("touchstart.drag", touchstarted)
+        .on("touchmove.drag", touchmoved)
+        .on("touchend.drag touchcancel.drag", touchended)
+        .style("-webkit-tap-highlight-color", "rgba(0,0,0,0)");
+  }
+
+  function mousedowned() {
+    if (touchending || !filter.apply(this, arguments)) return;
+    var gesture = beforestart("mouse", container.apply(this, arguments), mouse, this, arguments);
+    if (!gesture) return;
+    select(event.view).on("mousemove.drag", mousemoved, true).on("mouseup.drag", mouseupped, true);
+    nodrag(event.view);
+    nopropagation();
+    mousemoving = false;
+    gesture("start");
+  }
+
+  function mousemoved() {
+    noevent();
+    mousemoving = true;
+    gestures.mouse("drag");
+  }
+
+  function mouseupped() {
+    select(event.view).on("mousemove.drag mouseup.drag", null);
+    yesdrag(event.view, mousemoving);
+    noevent();
+    gestures.mouse("end");
+  }
+
+  function touchstarted() {
+    if (!filter.apply(this, arguments)) return;
+    var touches$$1 = event.changedTouches,
+        c = container.apply(this, arguments),
+        n = touches$$1.length, i, gesture;
+
+    for (i = 0; i < n; ++i) {
+      if (gesture = beforestart(touches$$1[i].identifier, c, touch, this, arguments)) {
+        nopropagation();
+        gesture("start");
+      }
+    }
+  }
+
+  function touchmoved() {
+    var touches$$1 = event.changedTouches,
+        n = touches$$1.length, i, gesture;
+
+    for (i = 0; i < n; ++i) {
+      if (gesture = gestures[touches$$1[i].identifier]) {
+        noevent();
+        gesture("drag");
+      }
+    }
+  }
+
+  function touchended() {
+    var touches$$1 = event.changedTouches,
+        n = touches$$1.length, i, gesture;
+
+    if (touchending) clearTimeout(touchending);
+    touchending = setTimeout(function() { touchending = null; }, 500); // Ghost clicks are delayed!
+    for (i = 0; i < n; ++i) {
+      if (gesture = gestures[touches$$1[i].identifier]) {
+        nopropagation();
+        gesture("end");
+      }
+    }
+  }
+
+  function beforestart(id, container, point, that, args) {
+    var p = point(container, id), s, dx, dy,
+        sublisteners = listeners.copy();
+
+    if (!customEvent(new DragEvent(drag, "beforestart", s, id, active, p[0], p[1], 0, 0, sublisteners), function() {
+      if ((event.subject = s = subject.apply(that, args)) == null) return false;
+      dx = s.x - p[0] || 0;
+      dy = s.y - p[1] || 0;
+      return true;
+    })) return;
+
+    return function gesture(type) {
+      var p0 = p, n;
+      switch (type) {
+        case "start": gestures[id] = gesture, n = active++; break;
+        case "end": delete gestures[id], --active; // nobreak
+        case "drag": p = point(container, id), n = active; break;
+      }
+      customEvent(new DragEvent(drag, type, s, id, n, p[0] + dx, p[1] + dy, p[0] - p0[0], p[1] - p0[1], sublisteners), sublisteners.apply, sublisteners, [type, that, args]);
+    };
+  }
+
+  drag.filter = function(_) {
+    return arguments.length ? (filter = typeof _ === "function" ? _ : constant$6(!!_), drag) : filter;
+  };
+
+  drag.container = function(_) {
+    return arguments.length ? (container = typeof _ === "function" ? _ : constant$6(_), drag) : container;
+  };
+
+  drag.subject = function(_) {
+    return arguments.length ? (subject = typeof _ === "function" ? _ : constant$6(_), drag) : subject;
+  };
+
+  drag.on = function() {
+    var value = listeners.on.apply(listeners, arguments);
+    return value === listeners ? drag : value;
+  };
+
+  return drag;
+};
+
 var constant$7 = function(x) {
   return function constant() {
     return x;
   };
+};
+
+var epsilon$3 = 1e-12;
+var pi$2 = Math.PI;
+var halfPi$1 = pi$2 / 2;
+var tau$2 = 2 * pi$2;
+
+function arcInnerRadius$1(d) {
+  return d.innerRadius;
+}
+
+function arcOuterRadius$1(d) {
+  return d.outerRadius;
+}
+
+function arcStartAngle$1(d) {
+  return d.startAngle;
+}
+
+function arcEndAngle$1(d) {
+  return d.endAngle;
+}
+
+function arcPadAngle$1(d) {
+  return d && d.padAngle; // Note: optional!
+}
+
+function asin$1(x) {
+  return x >= 1 ? halfPi$1 : x <= -1 ? -halfPi$1 : Math.asin(x);
+}
+
+function intersect$1(x0, y0, x1, y1, x2, y2, x3, y3) {
+  var x10 = x1 - x0, y10 = y1 - y0,
+      x32 = x3 - x2, y32 = y3 - y2,
+      t = (x32 * (y0 - y2) - y32 * (x0 - x2)) / (y32 * x10 - x32 * y10);
+  return [x0 + t * x10, y0 + t * y10];
+}
+
+// Compute perpendicular offset line of length rc.
+// http://mathworld.wolfram.com/Circle-LineIntersection.html
+function cornerTangents$1(x0, y0, x1, y1, r1, rc, cw) {
+  var x01 = x0 - x1,
+      y01 = y0 - y1,
+      lo = (cw ? rc : -rc) / Math.sqrt(x01 * x01 + y01 * y01),
+      ox = lo * y01,
+      oy = -lo * x01,
+      x11 = x0 + ox,
+      y11 = y0 + oy,
+      x10 = x1 + ox,
+      y10 = y1 + oy,
+      x00 = (x11 + x10) / 2,
+      y00 = (y11 + y10) / 2,
+      dx = x10 - x11,
+      dy = y10 - y11,
+      d2 = dx * dx + dy * dy,
+      r = r1 - rc,
+      D = x11 * y10 - x10 * y11,
+      d = (dy < 0 ? -1 : 1) * Math.sqrt(Math.max(0, r * r * d2 - D * D)),
+      cx0 = (D * dy - dx * d) / d2,
+      cy0 = (-D * dx - dy * d) / d2,
+      cx1 = (D * dy + dx * d) / d2,
+      cy1 = (-D * dx + dy * d) / d2,
+      dx0 = cx0 - x00,
+      dy0 = cy0 - y00,
+      dx1 = cx1 - x00,
+      dy1 = cy1 - y00;
+
+  // Pick the closer of the two intersection points.
+  // TODO Is there a faster way to determine which intersection to use?
+  if (dx0 * dx0 + dy0 * dy0 > dx1 * dx1 + dy1 * dy1) cx0 = cx1, cy0 = cy1;
+
+  return {
+    cx: cx0,
+    cy: cy0,
+    x01: -ox,
+    y01: -oy,
+    x11: cx0 * (r1 / r - 1),
+    y11: cy0 * (r1 / r - 1)
+  };
+}
+
+var arc$1 = function() {
+  var innerRadius = arcInnerRadius$1,
+      outerRadius = arcOuterRadius$1,
+      cornerRadius = constant$7(0),
+      padRadius = null,
+      startAngle = arcStartAngle$1,
+      endAngle = arcEndAngle$1,
+      padAngle = arcPadAngle$1,
+      context = null;
+
+  function arc() {
+    var buffer,
+        r,
+        r0 = +innerRadius.apply(this, arguments),
+        r1 = +outerRadius.apply(this, arguments),
+        a0 = startAngle.apply(this, arguments) - halfPi$1,
+        a1 = endAngle.apply(this, arguments) - halfPi$1,
+        da = Math.abs(a1 - a0),
+        cw = a1 > a0;
+
+    if (!context) context = buffer = path();
+
+    // Ensure that the outer radius is always larger than the inner radius.
+    if (r1 < r0) r = r1, r1 = r0, r0 = r;
+
+    // Is it a point?
+    if (!(r1 > epsilon$3)) context.moveTo(0, 0);
+
+    // Or is it a circle or annulus?
+    else if (da > tau$2 - epsilon$3) {
+      context.moveTo(r1 * Math.cos(a0), r1 * Math.sin(a0));
+      context.arc(0, 0, r1, a0, a1, !cw);
+      if (r0 > epsilon$3) {
+        context.moveTo(r0 * Math.cos(a1), r0 * Math.sin(a1));
+        context.arc(0, 0, r0, a1, a0, cw);
+      }
+    }
+
+    // Or is it a circular or annular sector?
+    else {
+      var a01 = a0,
+          a11 = a1,
+          a00 = a0,
+          a10 = a1,
+          da0 = da,
+          da1 = da,
+          ap = padAngle.apply(this, arguments) / 2,
+          rp = (ap > epsilon$3) && (padRadius ? +padRadius.apply(this, arguments) : Math.sqrt(r0 * r0 + r1 * r1)),
+          rc = Math.min(Math.abs(r1 - r0) / 2, +cornerRadius.apply(this, arguments)),
+          rc0 = rc,
+          rc1 = rc,
+          t0,
+          t1;
+
+      // Apply padding? Note that since r1 ≥ r0, da1 ≥ da0.
+      if (rp > epsilon$3) {
+        var p0 = asin$1(rp / r0 * Math.sin(ap)),
+            p1 = asin$1(rp / r1 * Math.sin(ap));
+        if ((da0 -= p0 * 2) > epsilon$3) p0 *= (cw ? 1 : -1), a00 += p0, a10 -= p0;
+        else da0 = 0, a00 = a10 = (a0 + a1) / 2;
+        if ((da1 -= p1 * 2) > epsilon$3) p1 *= (cw ? 1 : -1), a01 += p1, a11 -= p1;
+        else da1 = 0, a01 = a11 = (a0 + a1) / 2;
+      }
+
+      var x01 = r1 * Math.cos(a01),
+          y01 = r1 * Math.sin(a01),
+          x10 = r0 * Math.cos(a10),
+          y10 = r0 * Math.sin(a10);
+
+      // Apply rounded corners?
+      if (rc > epsilon$3) {
+        var x11 = r1 * Math.cos(a11),
+            y11 = r1 * Math.sin(a11),
+            x00 = r0 * Math.cos(a00),
+            y00 = r0 * Math.sin(a00);
+
+        // Restrict the corner radius according to the sector angle.
+        if (da < pi$2) {
+          var oc = da0 > epsilon$3 ? intersect$1(x01, y01, x00, y00, x11, y11, x10, y10) : [x10, y10],
+              ax = x01 - oc[0],
+              ay = y01 - oc[1],
+              bx = x11 - oc[0],
+              by = y11 - oc[1],
+              kc = 1 / Math.sin(Math.acos((ax * bx + ay * by) / (Math.sqrt(ax * ax + ay * ay) * Math.sqrt(bx * bx + by * by))) / 2),
+              lc = Math.sqrt(oc[0] * oc[0] + oc[1] * oc[1]);
+          rc0 = Math.min(rc, (r0 - lc) / (kc - 1));
+          rc1 = Math.min(rc, (r1 - lc) / (kc + 1));
+        }
+      }
+
+      // Is the sector collapsed to a line?
+      if (!(da1 > epsilon$3)) context.moveTo(x01, y01);
+
+      // Does the sector’s outer ring have rounded corners?
+      else if (rc1 > epsilon$3) {
+        t0 = cornerTangents$1(x00, y00, x01, y01, r1, rc1, cw);
+        t1 = cornerTangents$1(x11, y11, x10, y10, r1, rc1, cw);
+
+        context.moveTo(t0.cx + t0.x01, t0.cy + t0.y01);
+
+        // Have the corners merged?
+        if (rc1 < rc) context.arc(t0.cx, t0.cy, rc1, Math.atan2(t0.y01, t0.x01), Math.atan2(t1.y01, t1.x01), !cw);
+
+        // Otherwise, draw the two corners and the ring.
+        else {
+          context.arc(t0.cx, t0.cy, rc1, Math.atan2(t0.y01, t0.x01), Math.atan2(t0.y11, t0.x11), !cw);
+          context.arc(0, 0, r1, Math.atan2(t0.cy + t0.y11, t0.cx + t0.x11), Math.atan2(t1.cy + t1.y11, t1.cx + t1.x11), !cw);
+          context.arc(t1.cx, t1.cy, rc1, Math.atan2(t1.y11, t1.x11), Math.atan2(t1.y01, t1.x01), !cw);
+        }
+      }
+
+      // Or is the outer ring just a circular arc?
+      else context.moveTo(x01, y01), context.arc(0, 0, r1, a01, a11, !cw);
+
+      // Is there no inner ring, and it’s a circular sector?
+      // Or perhaps it’s an annular sector collapsed due to padding?
+      if (!(r0 > epsilon$3) || !(da0 > epsilon$3)) context.lineTo(x10, y10);
+
+      // Does the sector’s inner ring (or point) have rounded corners?
+      else if (rc0 > epsilon$3) {
+        t0 = cornerTangents$1(x10, y10, x11, y11, r0, -rc0, cw);
+        t1 = cornerTangents$1(x01, y01, x00, y00, r0, -rc0, cw);
+
+        context.lineTo(t0.cx + t0.x01, t0.cy + t0.y01);
+
+        // Have the corners merged?
+        if (rc0 < rc) context.arc(t0.cx, t0.cy, rc0, Math.atan2(t0.y01, t0.x01), Math.atan2(t1.y01, t1.x01), !cw);
+
+        // Otherwise, draw the two corners and the ring.
+        else {
+          context.arc(t0.cx, t0.cy, rc0, Math.atan2(t0.y01, t0.x01), Math.atan2(t0.y11, t0.x11), !cw);
+          context.arc(0, 0, r0, Math.atan2(t0.cy + t0.y11, t0.cx + t0.x11), Math.atan2(t1.cy + t1.y11, t1.cx + t1.x11), cw);
+          context.arc(t1.cx, t1.cy, rc0, Math.atan2(t1.y11, t1.x11), Math.atan2(t1.y01, t1.x01), !cw);
+        }
+      }
+
+      // Or is the inner ring just a circular arc?
+      else context.arc(0, 0, r0, a10, a00, cw);
+    }
+
+    context.closePath();
+
+    if (buffer) return context = null, buffer + "" || null;
+  }
+
+  arc.centroid = function() {
+    var r = (+innerRadius.apply(this, arguments) + +outerRadius.apply(this, arguments)) / 2,
+        a = (+startAngle.apply(this, arguments) + +endAngle.apply(this, arguments)) / 2 - pi$2 / 2;
+    return [Math.cos(a) * r, Math.sin(a) * r];
+  };
+
+  arc.innerRadius = function(_) {
+    return arguments.length ? (innerRadius = typeof _ === "function" ? _ : constant$7(+_), arc) : innerRadius;
+  };
+
+  arc.outerRadius = function(_) {
+    return arguments.length ? (outerRadius = typeof _ === "function" ? _ : constant$7(+_), arc) : outerRadius;
+  };
+
+  arc.cornerRadius = function(_) {
+    return arguments.length ? (cornerRadius = typeof _ === "function" ? _ : constant$7(+_), arc) : cornerRadius;
+  };
+
+  arc.padRadius = function(_) {
+    return arguments.length ? (padRadius = _ == null ? null : typeof _ === "function" ? _ : constant$7(+_), arc) : padRadius;
+  };
+
+  arc.startAngle = function(_) {
+    return arguments.length ? (startAngle = typeof _ === "function" ? _ : constant$7(+_), arc) : startAngle;
+  };
+
+  arc.endAngle = function(_) {
+    return arguments.length ? (endAngle = typeof _ === "function" ? _ : constant$7(+_), arc) : endAngle;
+  };
+
+  arc.padAngle = function(_) {
+    return arguments.length ? (padAngle = typeof _ === "function" ? _ : constant$7(+_), arc) : padAngle;
+  };
+
+  arc.context = function(_) {
+    return arguments.length ? ((context = _ == null ? null : _), arc) : context;
+  };
+
+  return arc;
 };
 
 function Linear$1(context) {
@@ -5206,6 +5723,192 @@ function x$1(p) {
 function y$1(p) {
   return p[1];
 }
+
+var line$2 = function() {
+  var x$$1 = x$1,
+      y$$1 = y$1,
+      defined = constant$7(true),
+      context = null,
+      curve = curveLinear$1,
+      output = null;
+
+  function line(data) {
+    var i,
+        n = data.length,
+        d,
+        defined0 = false,
+        buffer;
+
+    if (context == null) output = curve(buffer = path());
+
+    for (i = 0; i <= n; ++i) {
+      if (!(i < n && defined(d = data[i], i, data)) === defined0) {
+        if (defined0 = !defined0) output.lineStart();
+        else output.lineEnd();
+      }
+      if (defined0) output.point(+x$$1(d, i, data), +y$$1(d, i, data));
+    }
+
+    if (buffer) return output = null, buffer + "" || null;
+  }
+
+  line.x = function(_) {
+    return arguments.length ? (x$$1 = typeof _ === "function" ? _ : constant$7(+_), line) : x$$1;
+  };
+
+  line.y = function(_) {
+    return arguments.length ? (y$$1 = typeof _ === "function" ? _ : constant$7(+_), line) : y$$1;
+  };
+
+  line.defined = function(_) {
+    return arguments.length ? (defined = typeof _ === "function" ? _ : constant$7(!!_), line) : defined;
+  };
+
+  line.curve = function(_) {
+    return arguments.length ? (curve = _, context != null && (output = curve(context)), line) : curve;
+  };
+
+  line.context = function(_) {
+    return arguments.length ? (_ == null ? context = output = null : output = curve(context = _), line) : context;
+  };
+
+  return line;
+};
+
+function point$8(that, x, y) {
+  that._context.bezierCurveTo(
+    that._x1 + that._k * (that._x2 - that._x0),
+    that._y1 + that._k * (that._y2 - that._y0),
+    that._x2 + that._k * (that._x1 - x),
+    that._y2 + that._k * (that._y1 - y),
+    that._x2,
+    that._y2
+  );
+}
+
+function Cardinal$1(context, tension) {
+  this._context = context;
+  this._k = (1 - tension) / 6;
+}
+
+Cardinal$1.prototype = {
+  areaStart: function() {
+    this._line = 0;
+  },
+  areaEnd: function() {
+    this._line = NaN;
+  },
+  lineStart: function() {
+    this._x0 = this._x1 = this._x2 =
+    this._y0 = this._y1 = this._y2 = NaN;
+    this._point = 0;
+  },
+  lineEnd: function() {
+    switch (this._point) {
+      case 2: this._context.lineTo(this._x2, this._y2); break;
+      case 3: point$8(this, this._x1, this._y1); break;
+    }
+    if (this._line || (this._line !== 0 && this._point === 1)) this._context.closePath();
+    this._line = 1 - this._line;
+  },
+  point: function(x, y) {
+    x = +x, y = +y;
+    switch (this._point) {
+      case 0: this._point = 1; this._line ? this._context.lineTo(x, y) : this._context.moveTo(x, y); break;
+      case 1: this._point = 2; this._x1 = x, this._y1 = y; break;
+      case 2: this._point = 3; // proceed
+      default: point$8(this, x, y); break;
+    }
+    this._x0 = this._x1, this._x1 = this._x2, this._x2 = x;
+    this._y0 = this._y1, this._y1 = this._y2, this._y2 = y;
+  }
+};
+
+function point$9(that, x, y) {
+  var x1 = that._x1,
+      y1 = that._y1,
+      x2 = that._x2,
+      y2 = that._y2;
+
+  if (that._l01_a > epsilon$3) {
+    var a = 2 * that._l01_2a + 3 * that._l01_a * that._l12_a + that._l12_2a,
+        n = 3 * that._l01_a * (that._l01_a + that._l12_a);
+    x1 = (x1 * a - that._x0 * that._l12_2a + that._x2 * that._l01_2a) / n;
+    y1 = (y1 * a - that._y0 * that._l12_2a + that._y2 * that._l01_2a) / n;
+  }
+
+  if (that._l23_a > epsilon$3) {
+    var b = 2 * that._l23_2a + 3 * that._l23_a * that._l12_a + that._l12_2a,
+        m = 3 * that._l23_a * (that._l23_a + that._l12_a);
+    x2 = (x2 * b + that._x1 * that._l23_2a - x * that._l12_2a) / m;
+    y2 = (y2 * b + that._y1 * that._l23_2a - y * that._l12_2a) / m;
+  }
+
+  that._context.bezierCurveTo(x1, y1, x2, y2, that._x2, that._y2);
+}
+
+function CatmullRom$1(context, alpha) {
+  this._context = context;
+  this._alpha = alpha;
+}
+
+CatmullRom$1.prototype = {
+  areaStart: function() {
+    this._line = 0;
+  },
+  areaEnd: function() {
+    this._line = NaN;
+  },
+  lineStart: function() {
+    this._x0 = this._x1 = this._x2 =
+    this._y0 = this._y1 = this._y2 = NaN;
+    this._l01_a = this._l12_a = this._l23_a =
+    this._l01_2a = this._l12_2a = this._l23_2a =
+    this._point = 0;
+  },
+  lineEnd: function() {
+    switch (this._point) {
+      case 2: this._context.lineTo(this._x2, this._y2); break;
+      case 3: this.point(this._x2, this._y2); break;
+    }
+    if (this._line || (this._line !== 0 && this._point === 1)) this._context.closePath();
+    this._line = 1 - this._line;
+  },
+  point: function(x, y) {
+    x = +x, y = +y;
+
+    if (this._point) {
+      var x23 = this._x2 - x,
+          y23 = this._y2 - y;
+      this._l23_a = Math.sqrt(this._l23_2a = Math.pow(x23 * x23 + y23 * y23, this._alpha));
+    }
+
+    switch (this._point) {
+      case 0: this._point = 1; this._line ? this._context.lineTo(x, y) : this._context.moveTo(x, y); break;
+      case 1: this._point = 2; break;
+      case 2: this._point = 3; // proceed
+      default: point$9(this, x, y); break;
+    }
+
+    this._l01_a = this._l12_a, this._l12_a = this._l23_a;
+    this._l01_2a = this._l12_2a, this._l12_2a = this._l23_2a;
+    this._x0 = this._x1, this._x1 = this._x2, this._x2 = x;
+    this._y0 = this._y1, this._y1 = this._y2, this._y2 = y;
+  }
+};
+
+var curveCatmullRom = ((function custom(alpha) {
+
+  function catmullRom(context) {
+    return alpha ? new CatmullRom$1(context, alpha) : new Cardinal$1(context, 0);
+  }
+
+  catmullRom.alpha = function(alpha) {
+    return custom(+alpha);
+  };
+
+  return catmullRom;
+}))(0.5);
 
 function sign$1(x) {
   return x < 0 ? -1 : 1;
@@ -5305,1780 +6008,1835 @@ ReflectContext$1.prototype = {
 };
 
 var classCallCheck = function (instance, Constructor) {
-    if (!(instance instanceof Constructor)) {
-      throw new TypeError("Cannot call a class as a function");
+  if (!(instance instanceof Constructor)) {
+    throw new TypeError("Cannot call a class as a function");
+  }
+};
+
+var createClass = function () {
+  function defineProperties(target, props) {
+    for (var i = 0; i < props.length; i++) {
+      var descriptor = props[i];
+      descriptor.enumerable = descriptor.enumerable || false;
+      descriptor.configurable = true;
+      if ("value" in descriptor) descriptor.writable = true;
+      Object.defineProperty(target, descriptor.key, descriptor);
     }
+  }
+
+  return function (Constructor, protoProps, staticProps) {
+    if (protoProps) defineProperties(Constructor.prototype, protoProps);
+    if (staticProps) defineProperties(Constructor, staticProps);
+    return Constructor;
   };
+}();
 
-  var createClass = function () {
-    function defineProperties(target, props) {
-      for (var i = 0; i < props.length; i++) {
-        var descriptor = props[i];
-        descriptor.enumerable = descriptor.enumerable || false;
-        descriptor.configurable = true;
-        if ("value" in descriptor) descriptor.writable = true;
-        Object.defineProperty(target, descriptor.key, descriptor);
+
+
+
+
+
+
+var _extends = Object.assign || function (target) {
+  for (var i = 1; i < arguments.length; i++) {
+    var source = arguments[i];
+
+    for (var key in source) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        target[key] = source[key];
       }
     }
+  }
 
-    return function (Constructor, protoProps, staticProps) {
-      if (protoProps) defineProperties(Constructor.prototype, protoProps);
-      if (staticProps) defineProperties(Constructor, staticProps);
-      return Constructor;
-    };
-  }();
+  return target;
+};
 
-  var _extends = Object.assign || function (target) {
-    for (var i = 1; i < arguments.length; i++) {
-      var source = arguments[i];
+var get$1 = function get(object, property, receiver) {
+  if (object === null) object = Function.prototype;
+  var desc = Object.getOwnPropertyDescriptor(object, property);
 
-      for (var key in source) {
-        if (Object.prototype.hasOwnProperty.call(source, key)) {
-          target[key] = source[key];
-        }
-      }
-    }
+  if (desc === undefined) {
+    var parent = Object.getPrototypeOf(object);
 
-    return target;
-  };
-
-  var get$1 = function get(object, property, receiver) {
-    if (object === null) object = Function.prototype;
-    var desc = Object.getOwnPropertyDescriptor(object, property);
-
-    if (desc === undefined) {
-      var parent = Object.getPrototypeOf(object);
-
-      if (parent === null) {
-        return undefined;
-      } else {
-        return get(parent, property, receiver);
-      }
-    } else if ("value" in desc) {
-      return desc.value;
+    if (parent === null) {
+      return undefined;
     } else {
-      var getter = desc.get;
-
-      if (getter === undefined) {
-        return undefined;
-      }
-
-      return getter.call(receiver);
+      return get(parent, property, receiver);
     }
-  };
+  } else if ("value" in desc) {
+    return desc.value;
+  } else {
+    var getter = desc.get;
 
-  var inherits = function (subClass, superClass) {
-    if (typeof superClass !== "function" && superClass !== null) {
-      throw new TypeError("Super expression must either be null or a function, not " + typeof superClass);
+    if (getter === undefined) {
+      return undefined;
     }
 
-    subClass.prototype = Object.create(superClass && superClass.prototype, {
-      constructor: {
-        value: subClass,
-        enumerable: false,
-        writable: true,
-        configurable: true
-      }
-    });
-    if (superClass) Object.setPrototypeOf ? Object.setPrototypeOf(subClass, superClass) : subClass.__proto__ = superClass;
-  };
+    return getter.call(receiver);
+  }
+};
 
-  var possibleConstructorReturn = function (self, call) {
-    if (!self) {
-      throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
+var inherits = function (subClass, superClass) {
+  if (typeof superClass !== "function" && superClass !== null) {
+    throw new TypeError("Super expression must either be null or a function, not " + typeof superClass);
+  }
+
+  subClass.prototype = Object.create(superClass && superClass.prototype, {
+    constructor: {
+      value: subClass,
+      enumerable: false,
+      writable: true,
+      configurable: true
     }
+  });
+  if (superClass) Object.setPrototypeOf ? Object.setPrototypeOf(subClass, superClass) : subClass.__proto__ = superClass;
+};
 
-    return call && (typeof call === "object" || typeof call === "function") ? call : self;
-  };
 
-  var toConsumableArray = function (arr) {
-    if (Array.isArray(arr)) {
-      for (var i = 0, arr2 = Array(arr.length); i < arr.length; i++) arr2[i] = arr[i];
 
-      return arr2;
-    } else {
-      return Array.from(arr);
-    }
-  };
+
+
+
+
+
+
+
+
+var possibleConstructorReturn = function (self, call) {
+  if (!self) {
+    throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
+  }
+
+  return call && (typeof call === "object" || typeof call === "function") ? call : self;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+var toConsumableArray = function (arr) {
+  if (Array.isArray(arr)) {
+    for (var i = 0, arr2 = Array(arr.length); i < arr.length; i++) arr2[i] = arr[i];
+
+    return arr2;
+  } else {
+    return Array.from(arr);
+  }
+};
 
 var Annotation = function () {
-    function Annotation(_ref) {
-      var _ref$x = _ref.x,
-          x = _ref$x === undefined ? 0 : _ref$x,
-          _ref$y = _ref.y,
-          y = _ref$y === undefined ? 0 : _ref$y,
-          _ref$dy = _ref.dy,
-          dy = _ref$dy === undefined ? 0 : _ref$dy,
-          _ref$dx = _ref.dx,
-          dx = _ref$dx === undefined ? 0 : _ref$dx,
-          data = _ref.data,
-          type = _ref.type,
-          subject = _ref.subject,
-          connector = _ref.connector,
-          note = _ref.note,
-          disable = _ref.disable,
-          id = _ref.id,
-          className = _ref.className;
-      classCallCheck(this, Annotation);
+  function Annotation(_ref) {
+    var _ref$x = _ref.x,
+        x = _ref$x === undefined ? 0 : _ref$x,
+        _ref$y = _ref.y,
+        y = _ref$y === undefined ? 0 : _ref$y,
+        _ref$dy = _ref.dy,
+        dy = _ref$dy === undefined ? 0 : _ref$dy,
+        _ref$dx = _ref.dx,
+        dx = _ref$dx === undefined ? 0 : _ref$dx,
+        data = _ref.data,
+        type = _ref.type,
+        subject = _ref.subject,
+        connector = _ref.connector,
+        note = _ref.note,
+        disable = _ref.disable,
+        id = _ref.id,
+        className = _ref.className;
+    classCallCheck(this, Annotation);
 
 
+    this._dx = dx;
+    this._dy = dy;
+    this._x = x;
+    this._y = y;
+    this.id = id;
+    this._className = className || '';
+
+    this.type = type || '';
+    this.data = data;
+
+    this.note = note || {};
+    this.connector = connector || {};
+    this.subject = subject || {};
+
+    this.disable = disable || [];
+  }
+
+  createClass(Annotation, [{
+    key: 'updatePosition',
+    value: function updatePosition() {
+      if (this.type.setPosition) {
+        this.type.setPosition();
+        if (this.type.subject.selectAll(':not(.handle)').nodes().length !== 0) {
+          this.type.redrawSubject();
+        }
+      }
+    }
+  }, {
+    key: 'updateOffset',
+    value: function updateOffset() {
+      if (this.type.setOffset) {
+        this.type.setOffset();
+
+        if (this.type.connector.selectAll(':not(.handle)').nodes().length !== 0) {
+          this.type.redrawConnector();
+        }
+
+        this.type.redrawNote();
+      }
+    }
+  }, {
+    key: 'className',
+    get: function get$$1() {
+      return this._className;
+    },
+    set: function set$$1(className) {
+      this._className = className;
+      if (this.type.setClassName) this.type.setClassName();
+    }
+  }, {
+    key: 'x',
+    get: function get$$1() {
+      return this._x;
+    },
+    set: function set$$1(x) {
+      this._x = x;
+      this.updatePosition();
+    }
+  }, {
+    key: 'y',
+    get: function get$$1() {
+      return this._y;
+    },
+    set: function set$$1(y) {
+      this._y = y;
+      this.updatePosition();
+    }
+  }, {
+    key: 'dx',
+    get: function get$$1() {
+      return this._dx;
+    },
+    set: function set$$1(dx) {
       this._dx = dx;
+      this.updateOffset();
+    }
+  }, {
+    key: 'dy',
+    get: function get$$1() {
+      return this._dy;
+    },
+    set: function set$$1(dy) {
       this._dy = dy;
+      this.updateOffset();
+    }
+  }, {
+    key: 'offset',
+    get: function get$$1() {
+      return { x: this._dx, y: this._dy };
+    },
+    set: function set$$1(_ref2) {
+      var x = _ref2.x,
+          y = _ref2.y;
+
+      this._dx = x;
+      this._dy = y;
+      this.updateOffset();
+    }
+  }, {
+    key: 'position',
+    get: function get$$1() {
+      return { x: this._x, y: this._y };
+    },
+    set: function set$$1(_ref3) {
+      var x = _ref3.x,
+          y = _ref3.y;
+
       this._x = x;
       this._y = y;
-      this.id = id;
-      this._className = className || '';
-
-      this.type = type || '';
-      this.data = data;
-
-      this.note = note || {};
-      this.connector = connector || {};
-      this.subject = subject || {};
-
-      this.disable = disable || [];
+      this.updatePosition();
     }
+  }, {
+    key: 'translation',
+    get: function get$$1() {
+      return {
+        x: this._x + this._dx,
+        y: this._y + this._dy
+      };
+    }
+  }, {
+    key: 'json',
+    get: function get$$1() {
+      var json = {
+        x: this._x,
+        y: this._y,
+        dx: this._dx,
+        dy: this._dy
+      };
 
-    createClass(Annotation, [{
-      key: 'updatePosition',
-      value: function updatePosition() {
-        if (this.type.setPosition) {
-          this.type.setPosition();
-          if (this.type.subject.selectAll(':not(.handle)').nodes().length !== 0) {
-            this.type.redrawSubject();
-          }
-        }
-      }
-    }, {
-      key: 'updateOffset',
-      value: function updateOffset() {
-        if (this.type.setOffset) {
-          this.type.setOffset();
+      if (this.data && Object.keys(this.data).length > 0) json.data = this.data;
+      if (this.type) json.type = this.type;
+      if (this._className) json.className = this._className;
 
-          if (this.type.connector.selectAll(':not(.handle)').nodes().length !== 0) {
-            this.type.redrawConnector();
-          }
+      if (Object.keys(this.connector).length > 0) json.connector = this.connector;
+      if (Object.keys(this.subject).length > 0) json.subject = this.subject;
+      if (Object.keys(this.note).length > 0) json.note = this.note;
 
-          this.type.redrawNote();
-        }
-      }
-    }, {
-      key: 'className',
-      get: function get() {
-        return this._className;
-      },
-      set: function set(className) {
-        this._className = className;
-        if (this.type.setClassName) this.type.setClassName();
-      }
-    }, {
-      key: 'x',
-      get: function get() {
-        return this._x;
-      },
-      set: function set(x) {
-        this._x = x;
-        this.updatePosition();
-      }
-    }, {
-      key: 'y',
-      get: function get() {
-        return this._y;
-      },
-      set: function set(y) {
-        this._y = y;
-        this.updatePosition();
-      }
-    }, {
-      key: 'dx',
-      get: function get() {
-        return this._dx;
-      },
-      set: function set(dx) {
-        this._dx = dx;
-        this.updateOffset();
-      }
-    }, {
-      key: 'dy',
-      get: function get() {
-        return this._dy;
-      },
-      set: function set(dy) {
-        this._dy = dy;
-        this.updateOffset();
-      }
-    }, {
-      key: 'offset',
-      get: function get() {
-        return { x: this._dx, y: this._dy };
-      },
-      set: function set(_ref2) {
-        var x = _ref2.x,
-            y = _ref2.y;
-
-        this._dx = x;
-        this._dy = y;
-        this.updateOffset();
-      }
-    }, {
-      key: 'position',
-      get: function get() {
-        return { x: this._x, y: this._y };
-      },
-      set: function set(_ref3) {
-        var x = _ref3.x,
-            y = _ref3.y;
-
-        this._x = x;
-        this._y = y;
-        this.updatePosition();
-      }
-    }, {
-      key: 'translation',
-      get: function get() {
-        return {
-          x: this._x + this._dx,
-          y: this._y + this._dy
-        };
-      }
-    }, {
-      key: 'json',
-      get: function get() {
-        var json = {
-          x: this._x,
-          y: this._y,
-          dx: this._dx,
-          dy: this._dy
-        };
-
-        if (this.data && Object.keys(this.data).length > 0) json.data = this.data;
-        if (this.type) json.type = this.type;
-        if (this._className) json.className = this._className;
-
-        if (Object.keys(this.connector).length > 0) json.connector = this.connector;
-        if (Object.keys(this.subject).length > 0) json.subject = this.subject;
-        if (Object.keys(this.note).length > 0) json.note = this.note;
-
-        return json;
-      }
-    }]);
-    return Annotation;
-  }();
+      return json;
+    }
+  }]);
+  return Annotation;
+}();
 
 var AnnotationCollection = function () {
-    function AnnotationCollection(_ref) {
-      var annotations = _ref.annotations,
-          accessors = _ref.accessors,
-          accessorsInverse = _ref.accessorsInverse;
-      classCallCheck(this, AnnotationCollection);
+  function AnnotationCollection(_ref) {
+    var annotations = _ref.annotations,
+        accessors = _ref.accessors,
+        accessorsInverse = _ref.accessorsInverse;
+    classCallCheck(this, AnnotationCollection);
 
-      this.accessors = accessors;
-      this.accessorsInverse = accessorsInverse;
-      this.annotations = annotations;
+    this.accessors = accessors;
+    this.accessorsInverse = accessorsInverse;
+    this.annotations = annotations;
+  }
+
+  createClass(AnnotationCollection, [{
+    key: "clearTypes",
+    value: function clearTypes(newSettings) {
+      this.annotations.forEach(function (d) {
+        d.type = undefined;
+        d.subject = newSettings && newSettings.subject || d.subject;
+        d.connector = newSettings && newSettings.connector || d.connector;
+        d.note = newSettings && newSettings.note || d.note;
+      });
+    }
+  }, {
+    key: "setPositionWithAccessors",
+    value: function setPositionWithAccessors() {
+      var _this = this;
+
+      this.annotations.forEach(function (d) {
+        d.type.setPositionWithAccessors(_this.accessors);
+      });
+    }
+  }, {
+    key: "editMode",
+    value: function editMode(_editMode) {
+      this.annotations.forEach(function (a) {
+        if (a.type) {
+          a.type.editMode = _editMode;
+          a.type.updateEditMode();
+        }
+      });
+    }
+  }, {
+    key: "updateDisable",
+    value: function updateDisable(disable) {
+      this.annotations.forEach(function (a) {
+        a.disable = disable;
+        if (a.type) {
+          disable.forEach(function (d) {
+            if (a.type[d]) {
+              a.type[d].remove && a.type[d].remove();
+              a.type[d] = undefined;
+            }
+          });
+        }
+      });
+    }
+  }, {
+    key: "updateTextWrap",
+    value: function updateTextWrap(textWrap) {
+      this.annotations.forEach(function (a) {
+        if (a.type && a.type.updateTextWrap) {
+          a.type.updateTextWrap(textWrap);
+        }
+      });
+    }
+  }, {
+    key: "updateNotePadding",
+    value: function updateNotePadding(notePadding) {
+      this.annotations.forEach(function (a) {
+        if (a.type) {
+          a.type.notePadding = notePadding;
+        }
+      });
+    }
+  }, {
+    key: "json",
+    get: function get$$1() {
+      var _this2 = this;
+
+      return this.annotations.map(function (a) {
+        var json = a.json;
+        if (_this2.accessorsInverse && a.data) {
+          json.data = {};
+          Object.keys(_this2.accessorsInverse).forEach(function (k) {
+            json.data[k] = _this2.accessorsInverse[k]({ x: a.x, y: a.y });
+
+            //TODO make this feasible to map back to data for other types of subjects
+          });
+        }
+        return json;
+      });
+    }
+  }, {
+    key: "noteNodes",
+    get: function get$$1() {
+      return this.annotations.map(function (a) {
+        return _extends({}, a.type.getNoteBBoxOffset(), { positionX: a.x, positionY: a.y });
+      });
     }
 
-    createClass(AnnotationCollection, [{
-      key: "clearTypes",
-      value: function clearTypes(newSettings) {
-        this.annotations.forEach(function (d) {
-          d.type = undefined;
-          d.subject = newSettings && newSettings.subject || d.subject;
-          d.connector = newSettings && newSettings.connector || d.connector;
-          d.note = newSettings && newSettings.note || d.note;
-        });
-      }
-    }, {
-      key: "setPositionWithAccessors",
-      value: function setPositionWithAccessors() {
-        var _this = this;
-
-        this.annotations.forEach(function (d) {
-          d.type.setPositionWithAccessors(_this.accessors);
-        });
-      }
-    }, {
-      key: "editMode",
-      value: function editMode(_editMode) {
-        this.annotations.forEach(function (a) {
-          if (a.type) {
-            a.type.editMode = _editMode;
-            a.type.updateEditMode();
-          }
-        });
-      }
-    }, {
-      key: "updateDisable",
-      value: function updateDisable(disable) {
-        this.annotations.forEach(function (a) {
-          a.disable = disable;
-          if (a.type) {
-            disable.forEach(function (d) {
-              if (a.type[d]) {
-                a.type[d].remove && a.type[d].remove();
-                a.type[d] = undefined;
-              }
-            });
-          }
-        });
-      }
-    }, {
-      key: "updateTextWrap",
-      value: function updateTextWrap(textWrap) {
-        this.annotations.forEach(function (a) {
-          if (a.type && a.type.updateTextWrap) {
-            a.type.updateTextWrap(textWrap);
-          }
-        });
-      }
-    }, {
-      key: "updateNotePadding",
-      value: function updateNotePadding(notePadding) {
-        this.annotations.forEach(function (a) {
-          if (a.type) {
-            a.type.notePadding = notePadding;
-          }
-        });
-      }
-    }, {
-      key: "json",
-      get: function get() {
-        var _this2 = this;
-
-        return this.annotations.map(function (a) {
-          var json = a.json;
-          if (_this2.accessorsInverse && a.data) {
-            json.data = {};
-            Object.keys(_this2.accessorsInverse).forEach(function (k) {
-              json.data[k] = _this2.accessorsInverse[k]({ x: a.x, y: a.y });
-
-              //TODO make this feasible to map back to data for other types of subjects
-            });
-          }
-          return json;
-        });
-      }
-    }, {
-      key: "noteNodes",
-      get: function get() {
-        return this.annotations.map(function (a) {
-          return _extends({}, a.type.getNoteBBoxOffset(), { positionX: a.x, positionY: a.y });
-        });
-      }
-
-      //TODO: come back and rethink if a.x and a.y are applicable in all situations
-      // get connectorNodes() {
-      //   return this.annotations.map(a => ({ ...a.type.getConnectorBBox(), startX: a.x, startY: a.y}))
-      // }
-
-      // get subjectNodes() {
-      //   return this.annotations.map(a => ({ ...a.type.getSubjectBBox(), startX: a.x, startY: a.y}))
-      // }
-
-      // get annotationNodes() {
-      //   return this.annotations.map(a => ({ ...a.type.getAnnotationBBox(), startX: a.x, startY: a.y}))
-      // }
-
-    }]);
-    return AnnotationCollection;
-  }();
-
-var pointHandle = function pointHandle(_ref) {
-    var _ref$cx = _ref.cx,
-        cx = _ref$cx === undefined ? 0 : _ref$cx,
-        _ref$cy = _ref.cy,
-        cy = _ref$cy === undefined ? 0 : _ref$cy;
-
-    return { move: { x: cx, y: cy } };
-  };
-
-  var circleHandles = function circleHandles(_ref2) {
-    var _ref2$cx = _ref2.cx,
-        cx = _ref2$cx === undefined ? 0 : _ref2$cx,
-        _ref2$cy = _ref2.cy,
-        cy = _ref2$cy === undefined ? 0 : _ref2$cy,
-        r1 = _ref2.r1,
-        r2 = _ref2.r2,
-        padding = _ref2.padding;
-
-    var h = { move: { x: cx, y: cy } };
-
-    if (r1 !== undefined) {
-      h.r1 = { x: cx + r1 / Math.sqrt(2), y: cy + r1 / Math.sqrt(2) };
-    }
-
-    if (r2 !== undefined) {
-      h.r2 = { x: cx + r2 / Math.sqrt(2), y: cy + r2 / Math.sqrt(2) };
-    }
-
-    if (padding !== undefined) {
-      h.padding = { x: cx + r1 + padding, y: cy };
-    }
-
-    return h;
-  };
-
-  //arc handles
-  var addHandles = function addHandles(_ref5) {
-    var group = _ref5.group,
-        handles = _ref5.handles,
-        _ref5$r = _ref5.r,
-        r = _ref5$r === undefined ? 10 : _ref5$r;
-
-    //give it a group and x,y to draw handles
-    //then give it instructions on what the handles change 
-    var h = group.selectAll('circle.handle').data(handles);
-
-    h.enter().append('circle').attr('class', 'handle').call(d3Drag.drag().container(d3Selection.select('g.annotations').node()).on('start', function (d) {      return d.start && d.start(d);
-    }).on('drag', function (d) {
-      return d.drag && d.drag(d);
-    }).on('end', function (d) {
-      return d.end && d.end(d);
-    }));
-
-    group.selectAll('circle.handle').attr('cx', function (d) {
-      return d.x;
-    }).attr('cy', function (d) {
-      return d.y;
-    }).attr('r', function (d) {
-      return d.r || r;
-    }).attr('class', function (d) {
-      return 'handle ' + (d.className || '');
-    });
-
-    h.exit().remove();
-  };
-
-var leftRightDynamic = function leftRightDynamic(align, y) {
-    if (align == "dynamic" || align == "left" || align == "right") {
-      if (y < 0) {
-        align = "top";
-      } else {
-        align = "bottom";
-      }
-    }
-    return align;
-  };
-
-  var topBottomDynamic = function topBottomDynamic(align, x) {
-    if (align == "dynamic" || align == "top" || align == "bottom") {
-      if (x < 0) {
-        align = "right";
-      } else {
-        align = "left";
-      }
-    }
-    return align;
-  };
-
-var noteAlignment = (function (_ref) {    var padding = _ref.padding,
-        bbox = _ref.bbox,
-        align = _ref.align,
-        orientation = _ref.orientation,
-        offset = _ref.offset;
-
-    var x = -bbox.x;
-    var y = -bbox.y;
-
-    if (orientation === "topBottom") {
-      align = topBottomDynamic(align, offset.x);
-      if (offset.y < 0) {
-        y -= bbox.height + padding;
-      } else {
-        y += padding;
-      }
-
-      if (align === "middle") {
-        x -= bbox.width / 2;
-      } else if (align === "right") {
-        x -= bbox.width;
-      }
-    } else if (orientation === "leftRight") {
-      align = leftRightDynamic(align, offset.y);
-      if (offset.x < 0) {
-        x -= bbox.width + padding;
-      } else {
-        x += padding;
-      }
-
-      if (align === "middle") {
-        y -= bbox.height / 2;
-      } else if (align === "top") {
-        y -= bbox.height;
-      }
-    }
-
-    return { x: x, y: y };
-  });
-
-var lineBuilder = function lineBuilder(_ref) {
-    var data = _ref.data,
-        _ref$curve = _ref.curve,
-        curve = _ref$curve === undefined ? d3Shape.curveLinear : _ref$curve,
-        canvasContext = _ref.canvasContext,
-        className = _ref.className;
-
-    var lineGen = d3Shape.line().curve(curve);
-
-    var builder = {
-      type: 'path',
-      className: className,
-      data: data
-    };
-
-    if (canvasContext) {
-      lineGen.context(canvasContext);
-      builder.pathMethods = lineGen;
-    } else {
-      builder.attrs = {
-        d: lineGen(data)
-      };
-    }
-
-    return builder;
-  };
-
-  var arcBuilder = function arcBuilder(_ref2) {
-    var data = _ref2.data,
-        canvasContext = _ref2.canvasContext,
-        className = _ref2.className;
-
-
-    var builder = {
-      type: 'path',
-      className: className,
-      data: data
-    };
-
-    var arcShape = d3Shape.arc().innerRadius(data.innerRadius || 0).outerRadius(data.outerRadius || data.radius || 2).startAngle(data.startAngle || 0).endAngle(data.endAngle || 2 * Math.PI);    if (canvasContext) {
-      arcShape.context(canvasContext);
-      builder.pathMethods = lineGen;
-    } else {
-
-      builder.attrs = {
-        d: arcShape()
-      };
-    }
-
-    return builder;
-  };
-
-var noteVertical = (function (_ref) {    var align = _ref.align,
-        _ref$x = _ref.x,
-        x = _ref$x === undefined ? 0 : _ref$x,
-        _ref$y = _ref.y,
-        y = _ref$y === undefined ? 0 : _ref$y,
-        bbox = _ref.bbox,
-        offset = _ref.offset,
-        padding = _ref.padding;
-
-    align = leftRightDynamic(align, offset.y);
-
-    if (align == "top") {
-      y -= bbox.height;
-    } else if (align == "middle") {
-      y -= bbox.height / 2;
-    }
-
-    var data = [[x, y], [x, y + bbox.height]];
-    return { components: [lineBuilder({ data: data, className: "note-line" })] };
-  });
-
-var noteHorizontal = (function (_ref) {    var align = _ref.align,
-        _ref$x = _ref.x,
-        x = _ref$x === undefined ? 0 : _ref$x,
-        _ref$y = _ref.y,
-        y = _ref$y === undefined ? 0 : _ref$y,
-        offset = _ref.offset,
-        bbox = _ref.bbox,
-        padding = _ref.padding;
-
-    align = topBottomDynamic(align, offset.x);
-
-    if (align == "right") {
-      x -= bbox.width;
-    } else if (align == "middle") {
-      x -= bbox.width / 2;
-    }
-
-    var data = [[x, y], [x + bbox.width, y]];
-    return { components: [lineBuilder({ data: data, className: "note-line" })] };
-  });
-
-var lineSetup = function lineSetup(_ref) {
-    var type = _ref.type,
-        subjectType = _ref.subjectType;
-
-    var annotation = type.annotation;
-    var offset = annotation.position;
-
-    var x1 = annotation.x - offset.x,
-        x2 = x1 + annotation.dx,
-        y1 = annotation.y - offset.y,
-        y2 = y1 + annotation.dy;
-
-    var subjectData = annotation.subject;
-
-    if (subjectType == "circle" && (subjectData.outerRadius || subjectData.radius)) {
-      var h = Math.sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
-      var angle = Math.asin(-y2 / h);
-      var r = subjectData.outerRadius || subjectData.radius + (subjectData.radiusPadding || 0);
-
-      x1 = Math.abs(Math.cos(angle) * r) * (x2 < 0 ? -1 : 1);
-      y1 = Math.abs(Math.sin(angle) * r) * (y2 < 0 ? -1 : 1);
-    }
-
-    if (subjectType == "rect") {
-      var width = subjectData.width,
-          height = subjectData.height;
-
-
-      if (width > 0 && annotation.dx > 0 || width < 0 && annotation.dx < 0) {
-        if (Math.abs(width) > Math.abs(annotation.dx)) x1 = width / 2;else x1 = width;
-      }
-      if (height > 0 && annotation.dy > 0 || height < 0 && annotation.dy < 0) {
-        if (Math.abs(height) > Math.abs(annotation.dy)) y1 = height / 2;else y1 = height;
-      }
-      if (x1 == width / 2 && y1 == height / 2) {
-        x1 = x2;y1 = y2;
-      }
-    }
-
-    return [[x1, y1], [x2, y2]];
-  };
-
-var connectorLine = (function (connectorData) {    var data = lineSetup(connectorData);
-    return { components: [lineBuilder({ data: data, className: "connector" })] };
-  });
-
-var connectorElbow = (function (_ref) {    var type = _ref.type,
-        subjectType = _ref.subjectType;
-
-
-    var annotation = type.annotation;
-    var offset = annotation.position;
-
-    var x1 = annotation.x - offset.x,
-        x2 = x1 + annotation.dx,
-        y1 = annotation.y - offset.y,
-        y2 = y1 + annotation.dy;
-
-    var subjectData = annotation.subject;
-
-    if (subjectType == "rect") {
-      var width = subjectData.width,
-          height = subjectData.height;
-
-
-      if (width > 0 && annotation.dx > 0 || width < 0 && annotation.dx < 0) {
-        if (Math.abs(width) > Math.abs(annotation.dx)) x1 = width / 2;else x1 = width;
-      }
-      if (height > 0 && annotation.dy > 0 || height < 0 && annotation.dy < 0) {
-        if (Math.abs(height) > Math.abs(annotation.dy)) y1 = height / 2;else y1 = height;
-      }
-      if (x1 == width / 2 && y1 == height / 2) {
-        x1 = x2;y1 = y2;
-      }
-    }
-
-    var data = [[x1, y1], [x2, y2]];
-
-    var diffY = y2 - y1;
-    var diffX = x2 - x1;
-    var xe = x2;
-    var ye = y2;
-    var opposite = y2 < y1 && x2 > x1 || x2 < x1 && y2 > y1 ? -1 : 1;
-
-    if (Math.abs(diffX) < Math.abs(diffY)) {
-      xe = x2;
-      ye = y1 + diffX * opposite;
-    } else {
-      ye = y2;
-      xe = x1 + diffY * opposite;
-    }
-
-    if (subjectType == "circle" && (subjectData.outerRadius || subjectData.radius)) {
-      var r = (subjectData.outerRadius || subjectData.radius) + (subjectData.radiusPadding || 0);
-      var length = r / Math.sqrt(2);
-
-      if (Math.abs(diffX) > length && Math.abs(diffY) > length) {
-        x1 = length * (x2 < 0 ? -1 : 1);
-        y1 = length * (y2 < 0 ? -1 : 1);
-        data = [[x1, y1], [xe, ye], [x2, y2]];
-      } else if (Math.abs(diffX) > Math.abs(diffY)) {
-        var angle = Math.asin(-y2 / r);
-        x1 = Math.abs(Math.cos(angle) * r) * (x2 < 0 ? -1 : 1);
-        data = [[x1, y2], [x2, y2]];
-      } else {
-        var _angle = Math.acos(x2 / r);
-        y1 = Math.abs(Math.sin(_angle) * r) * (y2 < 0 ? -1 : 1);
-        data = [[x2, y1], [x2, y2]];
-      }
-    } else {
-      data = [[x1, y1], [xe, ye], [x2, y2]];
-    }
-
-    return { components: [lineBuilder({ data: data, className: "connector" })] };
-  });
-
-var connectorCurve = (function (_ref) {
-    var type = _ref.type,
-        connectorData = _ref.connectorData,
-        subjectType = _ref.subjectType;
-
-
-    if (!connectorData) {
-      connectorData = {};
-    }
-    if (!connectorData.points || typeof connectorData.points === "number") {
-      connectorData.points = createPoints(type.annotation.offset, connectorData.points);
-    }
-    if (!connectorData.curve) {
-      connectorData.curve = d3Shape.curveCatmullRom;
-    }
-
-    var handles = [];
-
-    if (type.editMode) {
-      (function () {
-        var cHandles = connectorData.points.map(function (c, i) {
-          return _extends({}, pointHandle({ cx: c[0], cy: c[1] }), { index: i });
-        });
-
-        var updatePoint = function updatePoint(index) {
-          connectorData.points[index][0] += d3Selection.event.dx;
-          connectorData.points[index][1] += d3Selection.event.dy;
-          type.redrawConnector();
-        };
-
-        handles = type.mapHandles(cHandles.map(function (h) {
-          return _extends({}, h.move, { drag: updatePoint.bind(type, h.index) });
-        }));
-      })();
-    }
-
-    var data = lineSetup({ type: type, subjectType: subjectType });
-    data = [data[0]].concat(toConsumableArray(connectorData.points), [data[1]]);
-    var components = [lineBuilder({ data: data, curve: connectorData.curve, className: "connector" })];
-
-    return { components: components, handles: handles };
-  });
-
-  var createPoints = function createPoints(offset) {
-    var anchors = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : 2;
-
-    var diff = { x: offset.x / (anchors + 1), y: offset.y / (anchors + 1) };
-    var p = [];
-
-    var i = 1;
-    for (; i <= anchors; i++) {
-      p.push([diff.x * i + i % 2 * 20, diff.y * i - i % 2 * 20]);
-    }
-    return p;
-  };
-
-var connectorArrow = (function (_ref) {    var annotation = _ref.annotation,
-        start = _ref.start,
-        end = _ref.end;
-
-    var offset = annotation.position;
-    if (!start) {
-      start = [annotation.dx, annotation.dy];
-    } else {
-      start = [-end[0] + start[0], -end[1] + start[1]];
-    }
-    if (!end) {
-      end = [annotation.x - offset.x, annotation.y - offset.y];
-    }
-
-    var x1 = end[0],
-        y1 = end[1];
-
-    var dx = start[0];
-    var dy = start[1];
-
-    var size = 10;
-    var angleOffset = 16 / 180 * Math.PI;
-    var angle = Math.atan(dy / dx);
-
-    if (dx < 0) {
-      angle += Math.PI;
-    }
-
-    var data = [[x1, y1], [Math.cos(angle + angleOffset) * size + x1, Math.sin(angle + angleOffset) * size + y1], [Math.cos(angle - angleOffset) * size + x1, Math.sin(angle - angleOffset) * size + y1], [x1, y1]];
-
-    //TODO add in reverse
-    // if (canvasContext.arrowReverse){
-    //   data = [[x1, y1], 
-    //   [Math.cos(angle + angleOffset)*size, Math.sin(angle + angleOffset)*size],
-    //   [Math.cos(angle - angleOffset)*size, Math.sin(angle - angleOffset)*size],
-    //   [x1, y1]
-    //   ]
-    // } else {
-    //   data = [[x1, y1], 
-    //   [Math.cos(angle + angleOffset)*size, Math.sin(angle + angleOffset)*size],
-    //   [Math.cos(angle - angleOffset)*size, Math.sin(angle - angleOffset)*size],
-    //   [x1, y1]
-    //   ]
+    //TODO: come back and rethink if a.x and a.y are applicable in all situations
+    // get connectorNodes() {
+    //   return this.annotations.map(a => ({ ...a.type.getConnectorBBox(), startX: a.x, startY: a.y}))
     // }
 
-    return { components: [lineBuilder({ data: data, className: 'connector-arrow' })] };
+    // get subjectNodes() {
+    //   return this.annotations.map(a => ({ ...a.type.getSubjectBBox(), startX: a.x, startY: a.y}))
+    // }
+
+    // get annotationNodes() {
+    //   return this.annotations.map(a => ({ ...a.type.getAnnotationBBox(), startX: a.x, startY: a.y}))
+    // }
+
+  }]);
+  return AnnotationCollection;
+}();
+
+var pointHandle = function pointHandle(_ref) {
+  var _ref$cx = _ref.cx,
+      cx = _ref$cx === undefined ? 0 : _ref$cx,
+      _ref$cy = _ref.cy,
+      cy = _ref$cy === undefined ? 0 : _ref$cy;
+
+  return { move: { x: cx, y: cy } };
+};
+
+var circleHandles = function circleHandles(_ref2) {
+  var _ref2$cx = _ref2.cx,
+      cx = _ref2$cx === undefined ? 0 : _ref2$cx,
+      _ref2$cy = _ref2.cy,
+      cy = _ref2$cy === undefined ? 0 : _ref2$cy,
+      r1 = _ref2.r1,
+      r2 = _ref2.r2,
+      padding = _ref2.padding;
+
+  var h = { move: { x: cx, y: cy } };
+
+  if (r1 !== undefined) {
+    h.r1 = { x: cx + r1 / Math.sqrt(2), y: cy + r1 / Math.sqrt(2) };
+  }
+
+  if (r2 !== undefined) {
+    h.r2 = { x: cx + r2 / Math.sqrt(2), y: cy + r2 / Math.sqrt(2) };
+  }
+
+  if (padding !== undefined) {
+    h.padding = { x: cx + r1 + padding, y: cy };
+  }
+
+  return h;
+};
+
+
+
+
+
+//arc handles
+var addHandles = function addHandles(_ref5) {
+  var group = _ref5.group,
+      handles = _ref5.handles,
+      _ref5$r = _ref5.r,
+      r = _ref5$r === undefined ? 10 : _ref5$r;
+
+  //give it a group and x,y to draw handles
+  //then give it instructions on what the handles change 
+  var h = group.selectAll('circle.handle').data(handles);
+
+  h.enter().append('circle').attr('class', 'handle').call(drag().container(select$1('g.annotations').node()).on('start', function (d) {
+    return d.start && d.start(d);
+  }).on('drag', function (d) {
+    return d.drag && d.drag(d);
+  }).on('end', function (d) {
+    return d.end && d.end(d);
+  }));
+
+  group.selectAll('circle.handle').attr('cx', function (d) {
+    return d.x;
+  }).attr('cy', function (d) {
+    return d.y;
+  }).attr('r', function (d) {
+    return d.r || r;
+  }).attr('class', function (d) {
+    return 'handle ' + (d.className || '');
   });
 
-var connectorDot = (function (_ref) {    var line$$1 = _ref.line;
+  h.exit().remove();
+};
 
+var leftRightDynamic = function leftRightDynamic(align, y) {
+  if (align == "dynamic" || align == "left" || align == "right") {
+    if (y < 0) {
+      align = "top";
+    } else {
+      align = "bottom";
+    }
+  }
+  return align;
+};
 
-    var dot = arcBuilder({ className: 'connector-dot', data: { radius: 3 } });
-    dot.attrs.transform = 'translate(' + line$$1.data[0][0] + ', ' + line$$1.data[0][1] + ')';
+var topBottomDynamic = function topBottomDynamic(align, x) {
+  if (align == "dynamic" || align == "top" || align == "bottom") {
+    if (x < 0) {
+      align = "right";
+    } else {
+      align = "left";
+    }
+  }
+  return align;
+};
 
-    return { components: [dot] };
-  });
+var noteAlignment = (function (_ref) {
+  var padding = _ref.padding,
+      bbox = _ref.bbox,
+      align = _ref.align,
+      orientation = _ref.orientation,
+      offset = _ref.offset;
 
-var subjectCircle = (function (_ref) {
-    var subjectData = _ref.subjectData,
-        type = _ref.type;
+  var x = -bbox.x;
+  var y = -bbox.y;
 
-    if (!subjectData.radius && !subjectData.outerRadius) {
-      subjectData.radius = 20;
+  if (orientation === "topBottom") {
+    align = topBottomDynamic(align, offset.x);
+    if (offset.y < 0) {
+      y -= bbox.height + padding;
+    } else {
+      y += padding;
     }
 
-    var handles = [];
-    var c = arcBuilder({ data: subjectData, className: "subject" });
-    if (type.editMode) {
-      var h = circleHandles({
-        r1: c.data.outerRadius || c.data.radius,
-        r2: c.data.innerRadius,
-        padding: subjectData.radiusPadding
-      });
-
-      var updateRadius = function updateRadius(attr) {
-        var r = subjectData[attr] + d3Selection.event.dx * Math.sqrt(2);
-        subjectData[attr] = r;
-        type.redrawSubject();
-        type.redrawConnector();
-      };
-
-      var cHandles = [_extends({}, h.r1, { drag: updateRadius.bind(type, subjectData.outerRadius !== undefined ? 'outerRadius' : 'radius') })];
-
-      if (subjectData.innerRadius) {
-        cHandles.push(_extends({}, h.r2, { drag: updateRadius.bind(type, 'innerRadius') }));
-      }
-      handles = type.mapHandles(cHandles);
+    if (align === "middle") {
+      x -= bbox.width / 2;
+    } else if (align === "right") {
+      x -= bbox.width;
+    }
+  } else if (orientation === "leftRight") {
+    align = leftRightDynamic(align, offset.y);
+    if (offset.x < 0) {
+      x -= bbox.width + padding;
+    } else {
+      x += padding;
     }
 
-    return { components: [c], handles: handles };
-  });
-
-var subjectRect = (function (_ref) {
-    var subjectData = _ref.subjectData,
-        type = _ref.type;
-
-    if (!subjectData.width) {
-      subjectData.width = 100;
+    if (align === "middle") {
+      y -= bbox.height / 2;
+    } else if (align === "top") {
+      y -= bbox.height;
     }
-    if (!subjectData.height) {
-      subjectData.height = 100;
-    }
+  }
 
-    var handles = [];
+  return { x: x, y: y };
+});
+
+var lineBuilder = function lineBuilder(_ref) {
+  var data = _ref.data,
+      _ref$curve = _ref.curve,
+      curve = _ref$curve === undefined ? curveLinear$1 : _ref$curve,
+      canvasContext = _ref.canvasContext,
+      className = _ref.className;
+
+  var lineGen = line$2().curve(curve);
+
+  var builder = {
+    type: 'path',
+    className: className,
+    data: data
+  };
+
+  if (canvasContext) {
+    lineGen.context(canvasContext);
+    builder.pathMethods = lineGen;
+  } else {
+    builder.attrs = {
+      d: lineGen(data)
+    };
+  }
+
+  return builder;
+};
+
+var arcBuilder = function arcBuilder(_ref2) {
+  var data = _ref2.data,
+      canvasContext = _ref2.canvasContext,
+      className = _ref2.className;
+
+
+  var builder = {
+    type: 'path',
+    className: className,
+    data: data
+  };
+
+  var arcShape = arc$1().innerRadius(data.innerRadius || 0).outerRadius(data.outerRadius || data.radius || 2).startAngle(data.startAngle || 0).endAngle(data.endAngle || 2 * Math.PI);
+
+  if (canvasContext) {
+    arcShape.context(canvasContext);
+    builder.pathMethods = lineGen;
+  } else {
+
+    builder.attrs = {
+      d: arcShape()
+    };
+  }
+
+  return builder;
+};
+
+var noteVertical = (function (_ref) {
+  var align = _ref.align,
+      _ref$x = _ref.x,
+      x = _ref$x === undefined ? 0 : _ref$x,
+      _ref$y = _ref.y,
+      y = _ref$y === undefined ? 0 : _ref$y,
+      bbox = _ref.bbox,
+      offset = _ref.offset,
+      padding = _ref.padding;
+
+  align = leftRightDynamic(align, offset.y);
+
+  if (align == "top") {
+    y -= bbox.height;
+  } else if (align == "middle") {
+    y -= bbox.height / 2;
+  }
+
+  var data = [[x, y], [x, y + bbox.height]];
+  return { components: [lineBuilder({ data: data, className: "note-line" })] };
+});
+
+var noteHorizontal = (function (_ref) {
+  var align = _ref.align,
+      _ref$x = _ref.x,
+      x = _ref$x === undefined ? 0 : _ref$x,
+      _ref$y = _ref.y,
+      y = _ref$y === undefined ? 0 : _ref$y,
+      offset = _ref.offset,
+      bbox = _ref.bbox,
+      padding = _ref.padding;
+
+  align = topBottomDynamic(align, offset.x);
+
+  if (align == "right") {
+    x -= bbox.width;
+  } else if (align == "middle") {
+    x -= bbox.width / 2;
+  }
+
+  var data = [[x, y], [x + bbox.width, y]];
+  return { components: [lineBuilder({ data: data, className: "note-line" })] };
+});
+
+var lineSetup = function lineSetup(_ref) {
+  var type = _ref.type,
+      subjectType = _ref.subjectType;
+
+  var annotation = type.annotation;
+  var offset = annotation.position;
+
+  var x1 = annotation.x - offset.x,
+      x2 = x1 + annotation.dx,
+      y1 = annotation.y - offset.y,
+      y2 = y1 + annotation.dy;
+
+  var subjectData = annotation.subject;
+
+  if (subjectType == "circle" && (subjectData.outerRadius || subjectData.radius)) {
+    var h = Math.sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
+    var angle = Math.asin(-y2 / h);
+    var r = subjectData.outerRadius || subjectData.radius + (subjectData.radiusPadding || 0);
+
+    x1 = Math.abs(Math.cos(angle) * r) * (x2 < 0 ? -1 : 1);
+    y1 = Math.abs(Math.sin(angle) * r) * (y2 < 0 ? -1 : 1);
+  }
+
+  if (subjectType == "rect") {
     var width = subjectData.width,
         height = subjectData.height;
 
 
-    var data = [[0, 0], [width, 0], [width, height], [0, height], [0, 0]];
-    var rect = lineBuilder({ data: data, className: 'subject' });
-
-    if (type.editMode) {
-
-      var updateWidth = function updateWidth(attr) {
-        subjectData.width = d3Selection.event.x;
-        type.redrawSubject();
-        type.redrawConnector();
-      };
-
-      var updateHeight = function updateHeight() {
-        subjectData.height = d3Selection.event.y;        type.redrawSubject();
-        type.redrawConnector();
-      };
-
-      var rHandles = [{ x: width, y: height / 2, drag: updateWidth.bind(type) }, { x: width / 2, y: height, drag: updateHeight.bind(type) }];
-
-      handles = type.mapHandles(rHandles);
+    if (width > 0 && annotation.dx > 0 || width < 0 && annotation.dx < 0) {
+      if (Math.abs(width) > Math.abs(annotation.dx)) x1 = width / 2;else x1 = width;
     }
+    if (height > 0 && annotation.dy > 0 || height < 0 && annotation.dy < 0) {
+      if (Math.abs(height) > Math.abs(annotation.dy)) y1 = height / 2;else y1 = height;
+    }
+    if (x1 == width / 2 && y1 == height / 2) {
+      x1 = x2;y1 = y2;
+    }
+  }
 
-    return { components: [rect], handles: handles };
-  });
+  return [[x1, y1], [x2, y2]];
+};
 
-var subjectThreshold = (function (_ref) {    var subjectData = _ref.subjectData,
-        type = _ref.type;
+var connectorLine = (function (connectorData) {
+  var data = lineSetup(connectorData);
+  return { components: [lineBuilder({ data: data, className: "connector" })] };
+});
 
-    var offset = type.annotation.position;
+var connectorElbow = (function (_ref) {
+  var type = _ref.type,
+      subjectType = _ref.subjectType;
 
-    var x1 = (subjectData.x1 !== undefined ? subjectData.x1 : offset.x) - offset.x,
-        x2 = (subjectData.x2 !== undefined ? subjectData.x2 : offset.x) - offset.x,
-        y1 = (subjectData.y1 !== undefined ? subjectData.y1 : offset.y) - offset.y,
-        y2 = (subjectData.y2 !== undefined ? subjectData.y2 : offset.y) - offset.y;
 
-    var data = [[x1, y1], [x2, y2]];
-    return { components: [lineBuilder({ data: data, className: 'subject' })] };
-  });
+  var annotation = type.annotation;
+  var offset = annotation.position;
 
-var subjectBadge = (function (_ref) {
-    var subjectData = _ref.subjectData,
-        type = _ref.type;
+  var x1 = annotation.x - offset.x,
+      x2 = x1 + annotation.dx,
+      y1 = annotation.y - offset.y,
+      y2 = y1 + annotation.dy;
 
-    if (!subjectData.radius) subjectData.radius = 14;
-    if (!subjectData.x) subjectData.x = "left";
-    if (!subjectData.y) subjectData.y = "top";
+  var subjectData = annotation.subject;
 
-    var handles = [];
-    var radius = subjectData.radius;
-    var innerRadius = radius * .7;
-    var x = subjectData.x == "left" ? -radius : radius;
-    var y = subjectData.y == "top" ? -radius : radius;
-    var transform = 'translate(' + x + ', ' + y + ')';
-    var circlebg = arcBuilder({ className: 'subject', data: { radius: radius } });
-    circlebg.attrs.transform = transform;
+  if (subjectType == "rect") {
+    var width = subjectData.width,
+        height = subjectData.height;
 
-    var circle = arcBuilder({ className: 'subject-ring', data: { outerRadius: radius, innerRadius: innerRadius } });
-    circle.attrs.transform = transform;
 
-    var pointer = lineBuilder({ className: 'subject-pointer',
-      data: [[0, 0], [x, 0], [0, y], [0, 0]]
+    if (width > 0 && annotation.dx > 0 || width < 0 && annotation.dx < 0) {
+      if (Math.abs(width) > Math.abs(annotation.dx)) x1 = width / 2;else x1 = width;
+    }
+    if (height > 0 && annotation.dy > 0 || height < 0 && annotation.dy < 0) {
+      if (Math.abs(height) > Math.abs(annotation.dy)) y1 = height / 2;else y1 = height;
+    }
+    if (x1 == width / 2 && y1 == height / 2) {
+      x1 = x2;y1 = y2;
+    }
+  }
+
+  var data = [[x1, y1], [x2, y2]];
+
+  var diffY = y2 - y1;
+  var diffX = x2 - x1;
+  var xe = x2;
+  var ye = y2;
+  var opposite = y2 < y1 && x2 > x1 || x2 < x1 && y2 > y1 ? -1 : 1;
+
+  if (Math.abs(diffX) < Math.abs(diffY)) {
+    xe = x2;
+    ye = y1 + diffX * opposite;
+  } else {
+    ye = y2;
+    xe = x1 + diffY * opposite;
+  }
+
+  if (subjectType == "circle" && (subjectData.outerRadius || subjectData.radius)) {
+    var r = (subjectData.outerRadius || subjectData.radius) + (subjectData.radiusPadding || 0);
+    var length = r / Math.sqrt(2);
+
+    if (Math.abs(diffX) > length && Math.abs(diffY) > length) {
+      x1 = length * (x2 < 0 ? -1 : 1);
+      y1 = length * (y2 < 0 ? -1 : 1);
+      data = [[x1, y1], [xe, ye], [x2, y2]];
+    } else if (Math.abs(diffX) > Math.abs(diffY)) {
+      var angle = Math.asin(-y2 / r);
+      x1 = Math.abs(Math.cos(angle) * r) * (x2 < 0 ? -1 : 1);
+      data = [[x1, y2], [x2, y2]];
+    } else {
+      var _angle = Math.acos(x2 / r);
+      y1 = Math.abs(Math.sin(_angle) * r) * (y2 < 0 ? -1 : 1);
+      data = [[x2, y1], [x2, y2]];
+    }
+  } else {
+    data = [[x1, y1], [xe, ye], [x2, y2]];
+  }
+
+  return { components: [lineBuilder({ data: data, className: "connector" })] };
+});
+
+var connectorCurve = (function (_ref) {
+  var type = _ref.type,
+      connectorData = _ref.connectorData,
+      subjectType = _ref.subjectType;
+
+
+  if (!connectorData) {
+    connectorData = {};
+  }
+  if (!connectorData.points || typeof connectorData.points === "number") {
+    connectorData.points = createPoints(type.annotation.offset, connectorData.points);
+  }
+  if (!connectorData.curve) {
+    connectorData.curve = curveCatmullRom;
+  }
+
+  var handles = [];
+
+  if (type.editMode) {
+    (function () {
+      var cHandles = connectorData.points.map(function (c, i) {
+        return _extends({}, pointHandle({ cx: c[0], cy: c[1] }), { index: i });
+      });
+
+      var updatePoint = function updatePoint(index) {
+        connectorData.points[index][0] += event$1.dx;
+        connectorData.points[index][1] += event$1.dy;
+        type.redrawConnector();
+      };
+
+      handles = type.mapHandles(cHandles.map(function (h) {
+        return _extends({}, h.move, { drag: updatePoint.bind(type, h.index) });
+      }));
+    })();
+  }
+
+  var data = lineSetup({ type: type, subjectType: subjectType });
+  data = [data[0]].concat(toConsumableArray(connectorData.points), [data[1]]);
+  var components = [lineBuilder({ data: data, curve: connectorData.curve, className: "connector" })];
+
+  return { components: components, handles: handles };
+});
+
+var createPoints = function createPoints(offset) {
+  var anchors = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : 2;
+
+  var diff = { x: offset.x / (anchors + 1), y: offset.y / (anchors + 1) };
+  var p = [];
+
+  var i = 1;
+  for (; i <= anchors; i++) {
+    p.push([diff.x * i + i % 2 * 20, diff.y * i - i % 2 * 20]);
+  }
+  return p;
+};
+
+var connectorArrow = (function (_ref) {
+  var annotation = _ref.annotation,
+      start = _ref.start,
+      end = _ref.end;
+
+  var offset = annotation.position;
+  if (!start) {
+    start = [annotation.dx, annotation.dy];
+  } else {
+    start = [-end[0] + start[0], -end[1] + start[1]];
+  }
+  if (!end) {
+    end = [annotation.x - offset.x, annotation.y - offset.y];
+  }
+
+  var x1 = end[0],
+      y1 = end[1];
+
+  var dx = start[0];
+  var dy = start[1];
+
+  var size = 10;
+  var angleOffset = 16 / 180 * Math.PI;
+  var angle = Math.atan(dy / dx);
+
+  if (dx < 0) {
+    angle += Math.PI;
+  }
+
+  var data = [[x1, y1], [Math.cos(angle + angleOffset) * size + x1, Math.sin(angle + angleOffset) * size + y1], [Math.cos(angle - angleOffset) * size + x1, Math.sin(angle - angleOffset) * size + y1], [x1, y1]];
+
+  //TODO add in reverse
+  // if (canvasContext.arrowReverse){
+  //   data = [[x1, y1], 
+  //   [Math.cos(angle + angleOffset)*size, Math.sin(angle + angleOffset)*size],
+  //   [Math.cos(angle - angleOffset)*size, Math.sin(angle - angleOffset)*size],
+  //   [x1, y1]
+  //   ]
+  // } else {
+  //   data = [[x1, y1], 
+  //   [Math.cos(angle + angleOffset)*size, Math.sin(angle + angleOffset)*size],
+  //   [Math.cos(angle - angleOffset)*size, Math.sin(angle - angleOffset)*size],
+  //   [x1, y1]
+  //   ]
+  // }
+
+  return { components: [lineBuilder({ data: data, className: 'connector-arrow' })] };
+});
+
+var connectorDot = (function (_ref) {
+  var line$$1 = _ref.line;
+
+
+  var dot = arcBuilder({ className: 'connector-dot', data: { radius: 3 } });
+  dot.attrs.transform = 'translate(' + line$$1.data[0][0] + ', ' + line$$1.data[0][1] + ')';
+
+  return { components: [dot] };
+});
+
+var subjectCircle = (function (_ref) {
+  var subjectData = _ref.subjectData,
+      type = _ref.type;
+
+  if (!subjectData.radius && !subjectData.outerRadius) {
+    subjectData.radius = 20;
+  }
+
+  var handles = [];
+  var c = arcBuilder({ data: subjectData, className: "subject" });
+  if (type.editMode) {
+    var h = circleHandles({
+      r1: c.data.outerRadius || c.data.radius,
+      r2: c.data.innerRadius,
+      padding: subjectData.radiusPadding
     });
 
-    if (type.editMode) {
+    var updateRadius = function updateRadius(attr) {
+      var r = subjectData[attr] + event$1.dx * Math.sqrt(2);
+      subjectData[attr] = r;
+      type.redrawSubject();
+      type.redrawConnector();
+    };
 
-      var dragBadge = function dragBadge() {
-        subjectData.x = d3Selection.event.x < 0 ? "left" : "right";
-        subjectData.y = d3Selection.event.y < 0 ? "top" : "bottom";        type.redrawSubject();
-      };
+    var cHandles = [_extends({}, h.r1, { drag: updateRadius.bind(type, subjectData.outerRadius !== undefined ? 'outerRadius' : 'radius') })];
 
-      var bHandles = [{ x: x * 2, y: y * 2, drag: dragBadge.bind(type) }];
-      handles = type.mapHandles(bHandles);
+    if (subjectData.innerRadius) {
+      cHandles.push(_extends({}, h.r2, { drag: updateRadius.bind(type, 'innerRadius') }));
     }
+    handles = type.mapHandles(cHandles);
+  }
 
-    var text = void 0;
-    if (subjectData.text) {
-      text = {
-        type: "text",
-        className: "badge-text",
-        attrs: {
-          text: subjectData.text,
-          "text-anchor": "middle",
-          dy: ".25em",
-          x: x,
-          y: y
-        }
-      };
-    }
-    return { components: [pointer, circlebg, circle, text], handles: handles };
+  return { components: [c], handles: handles };
+});
+
+var subjectRect = (function (_ref) {
+  var subjectData = _ref.subjectData,
+      type = _ref.type;
+
+  if (!subjectData.width) {
+    subjectData.width = 100;
+  }
+  if (!subjectData.height) {
+    subjectData.height = 100;
+  }
+
+  var handles = [];
+  var width = subjectData.width,
+      height = subjectData.height;
+
+
+  var data = [[0, 0], [width, 0], [width, height], [0, height], [0, 0]];
+  var rect = lineBuilder({ data: data, className: 'subject' });
+
+  if (type.editMode) {
+
+    var updateWidth = function updateWidth(attr) {
+      subjectData.width = event$1.x;
+      type.redrawSubject();
+      type.redrawConnector();
+    };
+
+    var updateHeight = function updateHeight() {
+      subjectData.height = event$1.y;
+      type.redrawSubject();
+      type.redrawConnector();
+    };
+
+    var rHandles = [{ x: width, y: height / 2, drag: updateWidth.bind(type) }, { x: width / 2, y: height, drag: updateHeight.bind(type) }];
+
+    handles = type.mapHandles(rHandles);
+  }
+
+  return { components: [rect], handles: handles };
+});
+
+var subjectThreshold = (function (_ref) {
+  var subjectData = _ref.subjectData,
+      type = _ref.type;
+
+  var offset = type.annotation.position;
+
+  var x1 = (subjectData.x1 !== undefined ? subjectData.x1 : offset.x) - offset.x,
+      x2 = (subjectData.x2 !== undefined ? subjectData.x2 : offset.x) - offset.x,
+      y1 = (subjectData.y1 !== undefined ? subjectData.y1 : offset.y) - offset.y,
+      y2 = (subjectData.y2 !== undefined ? subjectData.y2 : offset.y) - offset.y;
+
+  var data = [[x1, y1], [x2, y2]];
+  return { components: [lineBuilder({ data: data, className: 'subject' })] };
+});
+
+var subjectBadge = (function (_ref) {
+  var subjectData = _ref.subjectData,
+      type = _ref.type;
+
+  if (!subjectData.radius) subjectData.radius = 14;
+  if (!subjectData.x) subjectData.x = "left";
+  if (!subjectData.y) subjectData.y = "top";
+
+  var handles = [];
+  var radius = subjectData.radius;
+  var innerRadius = radius * .7;
+  var x = subjectData.x == "left" ? -radius : radius;
+  var y = subjectData.y == "top" ? -radius : radius;
+  var transform = 'translate(' + x + ', ' + y + ')';
+  var circlebg = arcBuilder({ className: 'subject', data: { radius: radius } });
+  circlebg.attrs.transform = transform;
+
+  var circle = arcBuilder({ className: 'subject-ring', data: { outerRadius: radius, innerRadius: innerRadius } });
+  circle.attrs.transform = transform;
+
+  var pointer = lineBuilder({ className: 'subject-pointer',
+    data: [[0, 0], [x, 0], [0, y], [0, 0]]
   });
 
+  if (type.editMode) {
+
+    var dragBadge = function dragBadge() {
+      subjectData.x = event$1.x < 0 ? "left" : "right";
+      subjectData.y = event$1.y < 0 ? "top" : "bottom";
+      type.redrawSubject();
+    };
+
+    var bHandles = [{ x: x * 2, y: y * 2, drag: dragBadge.bind(type) }];
+    handles = type.mapHandles(bHandles);
+  }
+
+  var text = void 0;
+  if (subjectData.text) {
+    text = {
+      type: "text",
+      className: "badge-text",
+      attrs: {
+        text: subjectData.text,
+        "text-anchor": "middle",
+        dy: ".25em",
+        x: x,
+        y: y
+      }
+    };
+  }
+  return { components: [pointer, circlebg, circle, text], handles: handles };
+});
+
+//Note options
+//Connector options
+//Subject options
 var Type = function () {
-    function Type(_ref) {
-      var a = _ref.a,
-          annotation = _ref.annotation,
-          editMode = _ref.editMode,
-          dispatcher = _ref.dispatcher,
-          notePadding = _ref.notePadding,
-          accessors = _ref.accessors;
-      classCallCheck(this, Type);
+  function Type(_ref) {
+    var a = _ref.a,
+        annotation = _ref.annotation,
+        editMode = _ref.editMode,
+        dispatcher = _ref.dispatcher,
+        notePadding = _ref.notePadding,
+        accessors = _ref.accessors;
+    classCallCheck(this, Type);
 
-      this.a = a;
+    this.a = a;
 
-      this.note = annotation.disable.indexOf("note") === -1 && a.select('g.annotation-note');
-      this.noteContent = this.note && a.select('g.annotation-note-content');
-      this.connector = annotation.disable.indexOf("connector") === -1 && a.select('g.annotation-connector');
-      this.subject = annotation.disable.indexOf("subject") === -1 && a.select('g.annotation-subject');
+    this.note = annotation.disable.indexOf("note") === -1 && a.select('g.annotation-note');
+    this.noteContent = this.note && a.select('g.annotation-note-content');
+    this.connector = annotation.disable.indexOf("connector") === -1 && a.select('g.annotation-connector');
+    this.subject = annotation.disable.indexOf("subject") === -1 && a.select('g.annotation-subject');
 
-      if (dispatcher) {
-        var handler = addHandlers.bind(null, dispatcher, annotation);
-        handler({ component: this.note, name: 'note' });
-        handler({ component: this.connector, name: 'connector' });
-        handler({ component: this.subject, name: 'subject' });
-      }
-
-      this.annotation = annotation;
-      this.editMode = annotation.editMode || editMode;
-      this.notePadding = notePadding || 3;
-      this.offsetCornerX = 0;
-      this.offsetCornerY = 0;
-
-      if (accessors && annotation.data) {
-        this.init(accessors);
-      }
+    if (dispatcher) {
+      var handler = addHandlers.bind(null, dispatcher, annotation);
+      handler({ component: this.note, name: 'note' });
+      handler({ component: this.connector, name: 'connector' });
+      handler({ component: this.subject, name: 'subject' });
     }
 
-    createClass(Type, [{
-      key: 'init',
-      value: function init(accessors) {
-        if (!this.annotation.x) {
-          this.mapX(accessors);
-        }
-        if (!this.annotation.y) {
-          this.mapY(accessors);
-        }
-      }
-    }, {
-      key: 'mapY',
-      value: function mapY(accessors) {
-        if (accessors.y) {
-          this.annotation.y = accessors.y(this.annotation.data);
-        }
-      }
-    }, {
-      key: 'mapX',
-      value: function mapX(accessors) {
-        if (accessors.x) {
-          this.annotation.x = accessors.x(this.annotation.data);
-        }
-      }
-    }, {
-      key: 'updateEditMode',
-      value: function updateEditMode() {
-        this.a.selectAll('circle.handle').remove();
-      }
-    }, {
-      key: 'drawOnSVG',
-      value: function drawOnSVG(component, builders) {
-        var _this = this;
+    this.annotation = annotation;
+    this.editMode = annotation.editMode || editMode;
+    this.notePadding = notePadding || 3;
+    this.offsetCornerX = 0;
+    this.offsetCornerY = 0;
 
-        if (!Array.isArray(builders)) {
-          builders = [builders];
+    if (accessors && annotation.data) {
+      this.init(accessors);
+    }
+  }
+
+  createClass(Type, [{
+    key: 'init',
+    value: function init(accessors) {
+      if (!this.annotation.x) {
+        this.mapX(accessors);
+      }
+      if (!this.annotation.y) {
+        this.mapY(accessors);
+      }
+    }
+  }, {
+    key: 'mapY',
+    value: function mapY(accessors) {
+      if (accessors.y) {
+        this.annotation.y = accessors.y(this.annotation.data);
+      }
+    }
+  }, {
+    key: 'mapX',
+    value: function mapX(accessors) {
+      if (accessors.x) {
+        this.annotation.x = accessors.x(this.annotation.data);
+      }
+    }
+  }, {
+    key: 'updateEditMode',
+    value: function updateEditMode() {
+      this.a.selectAll('circle.handle').remove();
+    }
+  }, {
+    key: 'drawOnSVG',
+    value: function drawOnSVG(component, builders) {
+      var _this = this;
+
+      if (!Array.isArray(builders)) {
+        builders = [builders];
+      }
+
+      builders.filter(function (b) {
+        return b;
+      }).forEach(function (_ref2) {
+        var type = _ref2.type,
+            className = _ref2.className,
+            attrs = _ref2.attrs,
+            handles = _ref2.handles;
+
+        if (type === "handle") {
+          addHandles({ group: component, r: attrs && attrs.r, handles: handles });
+        } else {
+          (function () {
+            newWithClass(component, [_this.annotation], type, className);
+
+            var el = component.select(type + '.' + className);
+            var attrKeys = Object.keys(attrs);
+            attrKeys.forEach(function (attr) {
+              if (attr === "text") {
+                el.text(attrs[attr]);
+              } else {
+                el.attr(attr, attrs[attr]);
+              }
+            });
+          })();
+        }
+      });
+    }
+
+    //TODO: how to extend this to a drawOnCanvas mode? 
+
+  }, {
+    key: 'getNoteBBox',
+    value: function getNoteBBox() {
+      return bboxWithoutHandles(this.note, '.annotation-note-content text');
+    }
+  }, {
+    key: 'getNoteBBoxOffset',
+    value: function getNoteBBoxOffset() {
+      var bbox = bboxWithoutHandles(this.note, '.annotation-note-content');
+      var transform = this.noteContent.attr('transform').split(/\(|\,|\)/g);
+      bbox.offsetCornerX = parseFloat(transform[1]) + this.annotation.dx;
+      bbox.offsetCornerY = parseFloat(transform[2]) + this.annotation.dy;
+      bbox.offsetX = this.annotation.dx;
+      bbox.offsetY = this.annotation.dy;
+      return bbox;
+    }
+
+    // getConnectorBBox() { return bboxWithoutHandles(this.connector)}
+    // getSubjectBBox() { return bboxWithoutHandles(this.subject)}
+    // getAnnotationBBox() { return bboxWithoutHandles(this.a)}
+
+  }, {
+    key: 'drawSubject',
+    value: function drawSubject() {
+      var context = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+
+      var subjectData = this.annotation.subject;
+      var type = context.type;
+      var subjectParams = { type: this, subjectData: subjectData };
+
+      var subject = {};
+      if (type === "circle") subject = subjectCircle(subjectParams);else if (type === "rect") subject = subjectRect(subjectParams);else if (type === "threshold") subject = subjectThreshold(subjectParams);else if (type === "badge") subject = subjectBadge(subjectParams);
+
+      var _subject = subject,
+          _subject$components = _subject.components,
+          components = _subject$components === undefined ? [] : _subject$components,
+          _subject$handles = _subject.handles,
+          handles = _subject$handles === undefined ? [] : _subject$handles;
+
+      if (this.editMode) {
+        handles = handles.concat(this.mapHandles([{ drag: this.dragSubject.bind(this) }]));
+        components.push({ type: "handle", handles: handles });
+      }
+
+      return components;
+    }
+  }, {
+    key: 'drawConnector',
+    value: function drawConnector() {
+      var context = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+
+      var connectorData = this.annotation.connector;
+      var type = connectorData.type || context.type;
+      var connectorParams = { type: this, connectorData: connectorData };
+      connectorParams.subjectType = this.typeSettings && this.typeSettings.subject && this.typeSettings.subject.type;
+
+      var connector = {};
+      if (type === "curve") connector = connectorCurve(connectorParams);else if (type === "elbow") connector = connectorElbow(connectorParams);else connector = connectorLine(connectorParams);
+
+      var _connector = connector,
+          _connector$components = _connector.components,
+          components = _connector$components === undefined ? [] : _connector$components,
+          _connector$handles = _connector.handles,
+          handles = _connector$handles === undefined ? [] : _connector$handles;
+
+      var line$$1 = components[0];
+      var endType = connectorData.end || context.end;
+      var end = {};
+      if (endType === "arrow") {
+        var s = line$$1.data[1];
+        var e = line$$1.data[0];
+        var distance = Math.sqrt(Math.pow(s[0] - e[0], 2) + Math.pow(s[1] - e[1], 2));
+        if (distance < 5 && line$$1.data[2]) {
+          s = line$$1.data[2];
         }
 
-        builders.filter(function (b) {
-          return b;
-        }).forEach(function (_ref2) {
-          var type = _ref2.type,
-              className = _ref2.className,
-              attrs = _ref2.attrs,
-              handles = _ref2.handles;
+        end = connectorArrow({ annotation: this.annotation, start: s, end: e });
+      } else if (endType === "dot") {
+        end = connectorDot({ line: line$$1 });
+      }
 
-          if (type === "handle") {
-            addHandles({ group: component, r: attrs && attrs.r, handles: handles });
-          } else {
-            (function () {
-              newWithClass(component, [_this.annotation], type, className);
+      if (end.components) {
+        components = components.concat(end.components);
+      }
 
-              var el = component.select(type + '.' + className);
-              var attrKeys = Object.keys(attrs);
-              attrKeys.forEach(function (attr) {
-                if (attr === "text") {
-                  el.text(attrs[attr]);
-                } else {
-                  el.attr(attr, attrs[attr]);
-                }
-              });
-            })();
+      if (this.editMode) {
+        if (handles.length !== 0) components.push({ type: "handle", handles: handles });
+      }
+      return components;
+    }
+  }, {
+    key: 'drawNote',
+    value: function drawNote() {
+      var context = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+
+      var noteData = this.annotation.note;
+      var align = noteData.align || context.align || 'dynamic';
+      var noteParams = { bbox: context.bbox, align: align, offset: this.annotation.offset };
+      var lineType = noteData.lineType || context.lineType;
+      var note = {};
+      if (lineType == "vertical") note = noteVertical(noteParams);else if (lineType == "horizontal") note = noteHorizontal(noteParams);
+
+      var _note = note,
+          _note$components = _note.components,
+          components = _note$components === undefined ? [] : _note$components,
+          _note$handles = _note.handles,
+          handles = _note$handles === undefined ? [] : _note$handles;
+
+      if (this.editMode) {
+        handles = this.mapHandles([{ x: 0, y: 0, drag: this.dragNote.bind(this) }]);
+        components.push({ type: "handle", handles: handles });
+      }
+      return components;
+    }
+  }, {
+    key: 'drawNoteContent',
+    value: function drawNoteContent(context) {
+      var noteData = this.annotation.note;
+      var padding = noteData.padding || this.notePadding;
+      var orientation = noteData.orientation || context.orientation || 'topBottom';
+      var lineType = noteData.lineType || context.lineType;
+      var align = noteData.align || context.align || 'dynamic';
+      var subjectType = this.typeSettings && this.typeSettings.subject && this.typeSettings.subject.type;
+
+      if (lineType == "vertical") orientation = "leftRight";else if (lineType == "horizontal") orientation = "topBottom";
+
+      var noteParams = { padding: padding, bbox: context.bbox, offset: this.annotation.offset, orientation: orientation, align: align };
+
+      var _noteAlignment = noteAlignment(noteParams),
+          x = _noteAlignment.x,
+          y = _noteAlignment.y;
+
+      this.offsetCornerX = x + this.annotation.dx;
+      this.offsetCornerY = y + this.annotation.dy;
+      this.note && this.noteContent.attr('transform', 'translate(' + x + ', ' + y + ')');
+
+      return [];
+    }
+  }, {
+    key: 'drawOnScreen',
+    value: function drawOnScreen(component, drawFunction) {
+      return this.drawOnSVG(component, drawFunction);
+    }
+  }, {
+    key: 'redrawSubject',
+    value: function redrawSubject() {
+      this.subject && this.drawOnScreen(this.subject, this.drawSubject());
+    }
+  }, {
+    key: 'redrawConnector',
+    value: function redrawConnector() {
+      var bbox = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : this.getNoteBBox();
+
+      this.connector && this.drawOnScreen(this.connector, this.drawConnector());
+    }
+  }, {
+    key: 'redrawNote',
+    value: function redrawNote() {
+      var bbox = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : this.getNoteBBox();
+
+      this.noteContent && this.drawOnScreen(this.noteContent, this.drawNoteContent({ bbox: bbox }));
+      this.note && this.drawOnScreen(this.note, this.drawNote({ bbox: bbox }));
+    }
+  }, {
+    key: 'setPosition',
+    value: function setPosition() {
+      var position = this.annotation.position;
+      this.a.attr('transform', 'translate(' + position.x + ', ' + position.y + ')');
+    }
+  }, {
+    key: 'setOffset',
+    value: function setOffset() {
+      if (this.note) {
+        var offset = this.annotation.offset;
+        this.note.attr('transform', 'translate(' + offset.x + ', ' + offset.y + ')');
+      }
+    }
+  }, {
+    key: 'setPositionWithAccessors',
+    value: function setPositionWithAccessors(accessors) {
+      if (accessors && this.annotation.data) {
+        this.mapX(accessors);
+        this.mapY(accessors);
+      }
+      this.setPosition();
+    }
+  }, {
+    key: 'setClassName',
+    value: function setClassName() {
+      this.a.attr("class", 'annotation ' + (this.className && this.className()) + ' ' + (this.editMode ? "editable" : "") + ' ' + (this.annotation.className || ''));
+    }
+  }, {
+    key: 'draw',
+    value: function draw() {
+      this.setClassName();
+      this.setPosition();
+      this.setOffset();
+      this.redrawSubject();
+      this.redrawConnector();
+      this.redrawNote();
+    }
+  }, {
+    key: 'dragstarted',
+    value: function dragstarted() {
+      event$1.sourceEvent.stopPropagation();
+      this.a.classed("dragging", true);
+      this.a.selectAll("circle.handle").style("pointer-events", "none");
+    }
+  }, {
+    key: 'dragended',
+    value: function dragended() {
+      this.a.classed("dragging", false);
+      this.a.selectAll("circle.handle").style("pointer-events", "all");
+    }
+  }, {
+    key: 'dragSubject',
+    value: function dragSubject() {
+      var position = this.annotation.position;
+      position.x += event$1.dx;
+      position.y += event$1.dy;
+      this.annotation.position = position;
+    }
+  }, {
+    key: 'dragNote',
+    value: function dragNote() {
+      var offset = this.annotation.offset;
+      offset.x += event$1.dx;
+      offset.y += event$1.dy;
+      this.annotation.offset = offset;
+    }
+  }, {
+    key: 'mapHandles',
+    value: function mapHandles(handles) {
+      var _this2 = this;
+
+      return handles.map(function (h) {
+        return _extends({}, h, {
+          start: _this2.dragstarted.bind(_this2), end: _this2.dragended.bind(_this2) });
+      });
+    }
+  }]);
+  return Type;
+}();
+
+var customType = function customType(initialType, typeSettings, _init) {
+  return function (_initialType) {
+    inherits(customType, _initialType);
+
+    function customType(settings) {
+      classCallCheck(this, customType);
+
+      var _this3 = possibleConstructorReturn(this, (customType.__proto__ || Object.getPrototypeOf(customType)).call(this, settings));
+
+      _this3.typeSettings = typeSettings;
+
+      if (typeSettings.disable) {
+        typeSettings.disable.forEach(function (d) {
+          _this3[d] = undefined;
+          if (d == "note") {
+            _this3.noteContent = undefined;
           }
         });
       }
+      return _this3;
+    }
 
-      //TODO: how to extend this to a drawOnCanvas mode? 
-
-    }, {
-      key: 'getNoteBBox',
-      value: function getNoteBBox() {
-        return bboxWithoutHandles(this.note, '.annotation-note-content text');
+    createClass(customType, [{
+      key: 'className',
+      value: function className() {
+        return (typeSettings.className || '') + ' ' + (get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this) && get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this).call(this) || '');
       }
-    }, {
-      key: 'getNoteBBoxOffset',
-      value: function getNoteBBoxOffset() {
-        var bbox = bboxWithoutHandles(this.note, '.annotation-note-content');
-        var transform = this.noteContent.attr('transform').split(/\(|\,|\)/g);
-        bbox.offsetCornerX = parseFloat(transform[1]) + this.annotation.dx;
-        bbox.offsetCornerY = parseFloat(transform[2]) + this.annotation.dy;
-        bbox.offsetX = this.annotation.dx;
-        bbox.offsetY = this.annotation.dy;
-        return bbox;
-      }
-
-      // getConnectorBBox() { return bboxWithoutHandles(this.connector)}
-      // getSubjectBBox() { return bboxWithoutHandles(this.subject)}
-      // getAnnotationBBox() { return bboxWithoutHandles(this.a)}
-
     }, {
       key: 'drawSubject',
-      value: function drawSubject() {
-        var context = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
-
-        var subjectData = this.annotation.subject;
-        var type = context.type;
-        var subjectParams = { type: this, subjectData: subjectData };
-
-        var subject = {};
-        if (type === "circle") subject = subjectCircle(subjectParams);else if (type === "rect") subject = subjectRect(subjectParams);else if (type === "threshold") subject = subjectThreshold(subjectParams);else if (type === "badge") subject = subjectBadge(subjectParams);
-
-        var _subject = subject,
-            _subject$components = _subject.components,
-            components = _subject$components === undefined ? [] : _subject$components,
-            _subject$handles = _subject.handles,
-            handles = _subject$handles === undefined ? [] : _subject$handles;
-
-        if (this.editMode) {
-          handles = handles.concat(this.mapHandles([{ drag: this.dragSubject.bind(this) }]));
-          components.push({ type: "handle", handles: handles });
-        }
-
-        return components;
+      value: function drawSubject(context) {
+        this.typeSettings.subject = Object.assign({}, typeSettings.subject, this.typeSettings.subject);
+        return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawSubject', this).call(this, _extends({}, context, this.typeSettings.subject));
       }
     }, {
       key: 'drawConnector',
-      value: function drawConnector() {
-        var context = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
-
-        var connectorData = this.annotation.connector;
-        var type = connectorData.type || context.type;
-        var connectorParams = { type: this, connectorData: connectorData };
-        connectorParams.subjectType = this.typeSettings && this.typeSettings.subject && this.typeSettings.subject.type;
-
-        var connector = {};
-        if (type === "curve") connector = connectorCurve(connectorParams);else if (type === "elbow") connector = connectorElbow(connectorParams);else connector = connectorLine(connectorParams);
-
-        var _connector = connector,
-            _connector$components = _connector.components,
-            components = _connector$components === undefined ? [] : _connector$components,
-            _connector$handles = _connector.handles,
-            handles = _connector$handles === undefined ? [] : _connector$handles;
-
-        var line$$1 = components[0];
-        var endType = connectorData.end || context.end;
-        var end = {};
-        if (endType === "arrow") {
-          var s = line$$1.data[1];
-          var e = line$$1.data[0];
-          var distance = Math.sqrt(Math.pow(s[0] - e[0], 2) + Math.pow(s[1] - e[1], 2));
-          if (distance < 5 && line$$1.data[2]) {
-            s = line$$1.data[2];
-          }
-
-          end = connectorArrow({ annotation: this.annotation, start: s, end: e });
-        } else if (endType === "dot") {
-          end = connectorDot({ line: line$$1 });
-        }
-
-        if (end.components) {
-          components = components.concat(end.components);
-        }
-
-        if (this.editMode) {
-          if (handles.length !== 0) components.push({ type: "handle", handles: handles });
-        }
-        return components;
+      value: function drawConnector(context, subjectContext) {
+        this.typeSettings.connector = Object.assign({}, typeSettings.connector, this.typeSettings.connector);
+        return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawConnector', this).call(this, _extends({}, context, typeSettings.connector, this.typeSettings.connector));
       }
     }, {
       key: 'drawNote',
-      value: function drawNote() {
-        var context = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
-
-        var noteData = this.annotation.note;
-        var align = noteData.align || context.align || 'dynamic';
-        var noteParams = { bbox: context.bbox, align: align, offset: this.annotation.offset };
-        var lineType = noteData.lineType || context.lineType;
-        var note = {};
-        if (lineType == "vertical") note = noteVertical(noteParams);else if (lineType == "horizontal") note = noteHorizontal(noteParams);
-
-        var _note = note,
-            _note$components = _note.components,
-            components = _note$components === undefined ? [] : _note$components,
-            _note$handles = _note.handles,
-            handles = _note$handles === undefined ? [] : _note$handles;
-
-        if (this.editMode) {
-          handles = this.mapHandles([{ x: 0, y: 0, drag: this.dragNote.bind(this) }]);
-          components.push({ type: "handle", handles: handles });
-        }
-        return components;
+      value: function drawNote(context) {
+        this.typeSettings.note = Object.assign({}, typeSettings.note, this.typeSettings.note);
+        return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNote', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
       }
     }, {
       key: 'drawNoteContent',
       value: function drawNoteContent(context) {
-        var noteData = this.annotation.note;
-        var padding = noteData.padding || this.notePadding;
-        var orientation = noteData.orientation || context.orientation || 'topBottom';
-        var lineType = noteData.lineType || context.lineType;
-        var align = noteData.align || context.align || 'dynamic';
-        var subjectType = this.typeSettings && this.typeSettings.subject && this.typeSettings.subject.type;
-
-        if (lineType == "vertical") orientation = "leftRight";else if (lineType == "horizontal") orientation = "topBottom";
-
-        var noteParams = { padding: padding, bbox: context.bbox, offset: this.annotation.offset, orientation: orientation, align: align };
-
-        var _noteAlignment = noteAlignment(noteParams),
-            x = _noteAlignment.x,
-            y = _noteAlignment.y;
-
-        this.offsetCornerX = x + this.annotation.dx;
-        this.offsetCornerY = y + this.annotation.dy;
-        this.note && this.noteContent.attr('transform', 'translate(' + x + ', ' + y + ')');
-
-        return [];
+        return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNoteContent', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
       }
-    }, {
-      key: 'drawOnScreen',
-      value: function drawOnScreen(component, drawFunction) {
-        return this.drawOnSVG(component, drawFunction);
-      }
-    }, {
-      key: 'redrawSubject',
-      value: function redrawSubject() {
-        this.subject && this.drawOnScreen(this.subject, this.drawSubject());
-      }
-    }, {
-      key: 'redrawConnector',
-      value: function redrawConnector() {
-        var bbox = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : this.getNoteBBox();
-
-        this.connector && this.drawOnScreen(this.connector, this.drawConnector());
-      }
-    }, {
-      key: 'redrawNote',
-      value: function redrawNote() {
-        var bbox = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : this.getNoteBBox();
-
-        this.noteContent && this.drawOnScreen(this.noteContent, this.drawNoteContent({ bbox: bbox }));
-        this.note && this.drawOnScreen(this.note, this.drawNote({ bbox: bbox }));
-      }
-    }, {
-      key: 'setPosition',
-      value: function setPosition() {
-        var position = this.annotation.position;
-        this.a.attr('transform', 'translate(' + position.x + ', ' + position.y + ')');
-      }
-    }, {
-      key: 'setOffset',
-      value: function setOffset() {
-        if (this.note) {
-          var offset = this.annotation.offset;
-          this.note.attr('transform', 'translate(' + offset.x + ', ' + offset.y + ')');
+    }], [{
+      key: 'init',
+      value: function init(annotation, accessors) {
+        get$1(customType.__proto__ || Object.getPrototypeOf(customType), 'init', this).call(this, annotation, accessors);
+        if (_init) {
+          annotation = _init(annotation, accessors);
         }
-      }
-    }, {
-      key: 'setPositionWithAccessors',
-      value: function setPositionWithAccessors(accessors) {
-        if (accessors && this.annotation.data) {
-          this.mapX(accessors);
-          this.mapY(accessors);
-        }
-        this.setPosition();
-      }
-    }, {
-      key: 'setClassName',
-      value: function setClassName() {
-        this.a.attr("class", 'annotation ' + (this.className && this.className()) + ' ' + (this.editMode ? "editable" : "") + ' ' + (this.annotation.className || ''));
-      }
-    }, {
-      key: 'draw',
-      value: function draw() {
-        this.setClassName();
-        this.setPosition();
-        this.setOffset();
-        this.redrawSubject();
-        this.redrawConnector();
-        this.redrawNote();
-      }
-    }, {
-      key: 'dragstarted',
-      value: function dragstarted() {
-        d3Selection.event.sourceEvent.stopPropagation();
-        this.a.classed("dragging", true);
-        this.a.selectAll("circle.handle").style("pointer-events", "none");
-      }
-    }, {
-      key: 'dragended',
-      value: function dragended() {
-        this.a.classed("dragging", false);
-        this.a.selectAll("circle.handle").style("pointer-events", "all");
-      }
-    }, {
-      key: 'dragSubject',
-      value: function dragSubject() {
-        var position = this.annotation.position;
-        position.x += d3Selection.event.dx;
-        position.y += d3Selection.event.dy;
-        this.annotation.position = position;
-      }
-    }, {
-      key: 'dragNote',
-      value: function dragNote() {
-        var offset = this.annotation.offset;
-        offset.x += d3Selection.event.dx;
-        offset.y += d3Selection.event.dy;
-        this.annotation.offset = offset;
-      }
-    }, {
-      key: 'mapHandles',
-      value: function mapHandles(handles) {
-        var _this2 = this;
-
-        return handles.map(function (h) {
-          return _extends({}, h, {
-            start: _this2.dragstarted.bind(_this2), end: _this2.dragended.bind(_this2) });
-        });
+        return annotation;
       }
     }]);
-    return Type;
-  }();
+    return customType;
+  }(initialType);
+};
 
-  var customType = function customType(initialType, typeSettings, _init) {
-    return function (_initialType) {
-      inherits(customType, _initialType);
+var d3NoteText = function (_Type) {
+  inherits(d3NoteText, _Type);
 
-      function customType(settings) {
-        classCallCheck(this, customType);
+  function d3NoteText(params) {
+    classCallCheck(this, d3NoteText);
 
-        var _this3 = possibleConstructorReturn(this, (customType.__proto__ || Object.getPrototypeOf(customType)).call(this, settings));
+    var _this4 = possibleConstructorReturn(this, (d3NoteText.__proto__ || Object.getPrototypeOf(d3NoteText)).call(this, params));
 
-        _this3.typeSettings = typeSettings;
+    _this4.textWrap = params.textWrap || 120;
+    _this4.drawText();
+    return _this4;
+  }
 
-        if (typeSettings.disable) {
-          typeSettings.disable.forEach(function (d) {
-            _this3[d] = undefined;
-            if (d == "note") {
-              _this3.noteContent = undefined;
-            }
-          });
-        }
-        return _this3;
-      }
-
-      createClass(customType, [{
-        key: 'className',
-        value: function className() {
-          return (typeSettings.className || '') + ' ' + (get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this) && get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'className', this).call(this) || '');
-        }
-      }, {
-        key: 'drawSubject',
-        value: function drawSubject(context) {
-          this.typeSettings.subject = Object.assign({}, typeSettings.subject, this.typeSettings.subject);
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawSubject', this).call(this, _extends({}, context, this.typeSettings.subject));
-        }
-      }, {
-        key: 'drawConnector',
-        value: function drawConnector(context, subjectContext) {
-          this.typeSettings.connector = Object.assign({}, typeSettings.connector, this.typeSettings.connector);
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawConnector', this).call(this, _extends({}, context, typeSettings.connector, this.typeSettings.connector));
-        }
-      }, {
-        key: 'drawNote',
-        value: function drawNote(context) {
-          this.typeSettings.note = Object.assign({}, typeSettings.note, this.typeSettings.note);
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNote', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
-        }
-      }, {
-        key: 'drawNoteContent',
-        value: function drawNoteContent(context) {
-          return get$1(customType.prototype.__proto__ || Object.getPrototypeOf(customType.prototype), 'drawNoteContent', this).call(this, _extends({}, context, typeSettings.note, this.typeSettings.note));
-        }
-      }], [{
-        key: 'init',
-        value: function init(annotation, accessors) {
-          get$1(customType.__proto__ || Object.getPrototypeOf(customType), 'init', this).call(this, annotation, accessors);
-          if (_init) {
-            annotation = _init(annotation, accessors);
-          }
-          return annotation;
-        }
-      }]);
-      return customType;
-    }(initialType);
-  };
-
-  var d3NoteText = function (_Type) {
-    inherits(d3NoteText, _Type);
-
-    function d3NoteText(params) {
-      classCallCheck(this, d3NoteText);
-
-      var _this4 = possibleConstructorReturn(this, (d3NoteText.__proto__ || Object.getPrototypeOf(d3NoteText)).call(this, params));
-
-      _this4.textWrap = params.textWrap || 120;
-      _this4.drawText();
-      return _this4;
+  createClass(d3NoteText, [{
+    key: 'updateTextWrap',
+    value: function updateTextWrap(textWrap) {
+      this.textWrap = textWrap;
+      this.drawText();
     }
 
-    createClass(d3NoteText, [{
-      key: 'updateTextWrap',
-      value: function updateTextWrap(textWrap) {
-        this.textWrap = textWrap;
-        this.drawText();
-      }
+    //TODO: add update text functionality
 
-      //TODO: add update text functionality
+  }, {
+    key: 'drawText',
+    value: function drawText() {
+      if (this.note) {
 
-    }, {
-      key: 'drawText',
-      value: function drawText() {
-        if (this.note) {
+        newWithClass(this.note, [this.annotation], 'g', 'annotation-note-content');
 
-          newWithClass(this.note, [this.annotation], 'g', 'annotation-note-content');
+        var noteContent = this.note.select('g.annotation-note-content');
+        newWithClass(noteContent, [this.annotation], 'rect', 'annotation-note-bg');
+        newWithClass(noteContent, [this.annotation], 'text', 'annotation-note-label');
+        newWithClass(noteContent, [this.annotation], 'text', 'annotation-note-title');
 
-          var noteContent = this.note.select('g.annotation-note-content');
-          newWithClass(noteContent, [this.annotation], 'rect', 'annotation-note-bg');
-          newWithClass(noteContent, [this.annotation], 'text', 'annotation-note-label');
-          newWithClass(noteContent, [this.annotation], 'text', 'annotation-note-title');
+        var titleBBox = { height: 0 };
+        var label = this.a.select('text.annotation-note-label');
+        var wrapLength = this.annotation.note && this.annotation.note.wrap || this.typeSettings && this.typeSettings.note && this.typeSettings.note.wrap || this.textWrap;
 
-          var titleBBox = { height: 0 };
-          var label = this.a.select('text.annotation-note-label');
-          var wrapLength = this.annotation.note && this.annotation.note.wrap || this.typeSettings && this.typeSettings.note && this.typeSettings.note.wrap || this.textWrap;
-
-          if (this.annotation.note.title) {
-            var title = this.a.select('text.annotation-note-title');
-            title.text(this.annotation.note.title).attr('dy', '1.1em');
-            title.call(wrap, wrapLength);
-            titleBBox = title.node().getBBox();
-          }
-
-          label.text(this.annotation.note.label).attr('dy', '1em');
-          label.call(wrap, wrapLength);
-
-          label.attr('y', titleBBox.height * 1.1 || 0);
-
-          var bbox = this.getNoteBBox();
-          this.a.select('rect.annotation-note-bg').attr('width', bbox.width).attr('height', bbox.height);
+        if (this.annotation.note.title) {
+          var title = this.a.select('text.annotation-note-title');
+          title.text(this.annotation.note.title).attr('dy', '1.1em');
+          title.call(wrap, wrapLength);
+          titleBBox = title.node().getBBox();
         }
+
+        label.text(this.annotation.note.label).attr('dy', '1em');
+        label.call(wrap, wrapLength);
+
+        label.attr('y', titleBBox.height * 1.1 || 0);
+
+        var bbox = this.getNoteBBox();
+        this.a.select('rect.annotation-note-bg').attr('width', bbox.width).attr('height', bbox.height);
       }
-    }]);
-    return d3NoteText;
-  }(Type);
-
-  var d3Label = customType(d3NoteText, {
-    className: "label",
-    note: { align: "middle" }
-  });
-
-  var d3Callout = customType(d3NoteText, {
-    className: "callout",
-    note: { lineType: "horizontal" }
-  });
-
-  var d3CalloutElbow = customType(d3Callout, {
-    className: "callout elbow",
-    connector: { type: "elbow" }
-  });
-
-  var d3CalloutCurve = customType(d3Callout, {
-    className: "callout curve",
-    connector: { type: "curve" }
-  });
-
-  var d3Badge = customType(Type, {
-    className: "badge",
-    subject: { type: "badge" },
-    disable: ['connector', 'note']
-  });
-
-  var d3CalloutCircle = customType(d3CalloutElbow, {
-    className: "callout circle",
-    subject: { type: "circle" }
-  });
-
-  var d3CalloutRect = customType(d3CalloutElbow, {
-    className: "callout rect",
-    subject: { type: "rect" }
-  });
-
-  var ThresholdMap = function (_d3Callout) {
-    inherits(ThresholdMap, _d3Callout);
-
-    function ThresholdMap() {
-      classCallCheck(this, ThresholdMap);
-      return possibleConstructorReturn(this, (ThresholdMap.__proto__ || Object.getPrototypeOf(ThresholdMap)).apply(this, arguments));
     }
+  }]);
+  return d3NoteText;
+}(Type);
 
-    createClass(ThresholdMap, [{
-      key: 'mapY',
-      value: function mapY(accessors) {
-        get$1(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapY', this).call(this, accessors);
-        var a = this.annotation;
-        if ((a.subject.x1 || a.subject.x2) && a.data && accessors.y) {
-          a.y = accessors.y(a.data);
-        }
+var d3Label = customType(d3NoteText, {
+  className: "label",
+  note: { align: "middle" }
+});
+
+var d3Callout = customType(d3NoteText, {
+  className: "callout",
+  note: { lineType: "horizontal" }
+});
+
+var d3CalloutElbow = customType(d3Callout, {
+  className: "callout elbow",
+  connector: { type: "elbow" }
+});
+
+var d3CalloutCurve = customType(d3Callout, {
+  className: "callout curve",
+  connector: { type: "curve" }
+});
+
+var d3Badge = customType(Type, {
+  className: "badge",
+  subject: { type: "badge" },
+  disable: ['connector', 'note']
+});
+
+var d3CalloutCircle = customType(d3CalloutElbow, {
+  className: "callout circle",
+  subject: { type: "circle" }
+});
+
+var d3CalloutRect = customType(d3CalloutElbow, {
+  className: "callout rect",
+  subject: { type: "rect" }
+});
+
+var ThresholdMap = function (_d3Callout) {
+  inherits(ThresholdMap, _d3Callout);
+
+  function ThresholdMap() {
+    classCallCheck(this, ThresholdMap);
+    return possibleConstructorReturn(this, (ThresholdMap.__proto__ || Object.getPrototypeOf(ThresholdMap)).apply(this, arguments));
+  }
+
+  createClass(ThresholdMap, [{
+    key: 'mapY',
+    value: function mapY(accessors) {
+      get$1(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapY', this).call(this, accessors);
+      var a = this.annotation;
+      if ((a.subject.x1 || a.subject.x2) && a.data && accessors.y) {
+        a.y = accessors.y(a.data);
       }
-    }, {
-      key: 'mapX',
-      value: function mapX(accessors) {
-        get$1(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapX', this).call(this, accessors);
-        var a = this.annotation;
-        if ((a.subject.y1 || a.subject.y2) && a.data && accessors.x) {
-          a.x = accessors.x(a.data);
-        }
-      }
-    }]);
-    return ThresholdMap;
-  }(d3Callout);
-
-  var d3XYThreshold = customType(ThresholdMap, {
-    className: "callout xythreshold",
-    subject: { type: "threshold" }
-  });
-
-  var newWithClass = function newWithClass(a, d, type, className) {
-    var group = a.selectAll(type + '.' + className).data(d);
-    group.enter().append(type).merge(group).attr('class', className);
-
-    group.exit().remove();
-    return a;
-  };
-
-  var addHandlers = function addHandlers(dispatcher, annotation, _ref3) {
-    var component = _ref3.component,
-        name = _ref3.name;
-
-    if (component) {
-      component.on("mouseover.annotations", function () {
-        dispatcher.call(name + 'over', component, annotation);
-      }).on("mouseout.annotations", function () {
-        return dispatcher.call(name + 'out', component, annotation);
-      }).on("click.annotations", function () {
-        return dispatcher.call(name + 'click', component, annotation);
-      });
     }
-  };
+  }, {
+    key: 'mapX',
+    value: function mapX(accessors) {
+      get$1(ThresholdMap.prototype.__proto__ || Object.getPrototypeOf(ThresholdMap.prototype), 'mapX', this).call(this, accessors);
+      var a = this.annotation;
+      if ((a.subject.y1 || a.subject.y2) && a.data && accessors.x) {
+        a.x = accessors.x(a.data);
+      }
+    }
+  }]);
+  return ThresholdMap;
+}(d3Callout);
 
-  //Text wrapping code adapted from Mike Bostock
-  var wrap = function wrap(text, width) {
-    text.each(function () {
-      var text = d3Selection.select(this),
-          words = text.text().split(/[ \t\r\n]+/).reverse(),
-          word,
-          line$$1 = [],
-          lineNumber = 0,
-          lineHeight = .2,
-          //ems
-      y = text.attr("y"),
-          dy = parseFloat(text.attr("dy")) || 0,
-          tspan = text.text(null).append("tspan").attr("x", 0).attr("dy", dy + "em");
+var d3XYThreshold = customType(ThresholdMap, {
+  className: "callout xythreshold",
+  subject: { type: "threshold" }
+});
 
-      while (word = words.pop()) {
-        line$$1.push(word);
+var newWithClass = function newWithClass(a, d, type, className) {
+  var group = a.selectAll(type + '.' + className).data(d);
+  group.enter().append(type).merge(group).attr('class', className);
+
+  group.exit().remove();
+  return a;
+};
+
+var addHandlers = function addHandlers(dispatcher, annotation, _ref3) {
+  var component = _ref3.component,
+      name = _ref3.name;
+
+  if (component) {
+    component.on("mouseover.annotations", function () {
+      dispatcher.call(name + 'over', component, annotation);
+    }).on("mouseout.annotations", function () {
+      return dispatcher.call(name + 'out', component, annotation);
+    }).on("click.annotations", function () {
+      return dispatcher.call(name + 'click', component, annotation);
+    });
+  }
+};
+
+//Text wrapping code adapted from Mike Bostock
+var wrap = function wrap(text, width) {
+  text.each(function () {
+    var text = select$1(this),
+        words = text.text().split(/[ \t\r\n]+/).reverse(),
+        word,
+        line$$1 = [],
+        lineNumber = 0,
+        lineHeight = .2,
+        //ems
+    y = text.attr("y"),
+        dy = parseFloat(text.attr("dy")) || 0,
+        tspan = text.text(null).append("tspan").attr("x", 0).attr("dy", dy + "em");
+
+    while (word = words.pop()) {
+      line$$1.push(word);
+      tspan.text(line$$1.join(" "));
+      if (tspan.node().getComputedTextLength() > width && line$$1.length > 1) {
+        line$$1.pop();
         tspan.text(line$$1.join(" "));
-        if (tspan.node().getComputedTextLength() > width && line$$1.length > 1) {
-          line$$1.pop();
-          tspan.text(line$$1.join(" "));
-          line$$1 = [word];
-          tspan = text.append("tspan").attr("x", 0).attr("dy", lineHeight + dy + "em").text(word);
-        }
+        line$$1 = [word];
+        tspan = text.append("tspan").attr("x", 0).attr("dy", lineHeight + dy + "em").text(word);
       }
+    }
+  });
+};
+
+var bboxWithoutHandles = function bboxWithoutHandles(selection$$1) {
+  var selector$$1 = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : ':not(.handle)';
+
+  if (!selection$$1) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+
+  return selection$$1.selectAll(selector$$1).nodes().reduce(function (p, c) {
+    var bbox = c.getBBox();
+    p.x = Math.min(p.x, bbox.x);
+    p.y = Math.min(p.y, bbox.y);
+    p.width = Math.max(p.width, bbox.width);
+    p.height += bbox.height;
+    return p;
+  }, { x: 0, y: 0, width: 0, height: 0 });
+};
+
+function annotation() {
+  var annotations = [],
+      collection = void 0,
+      context = void 0,
+      //TODO: add canvas functionality
+  disable = [],
+      accessors = {},
+      accessorsInverse = {},
+      editMode = false,
+      ids = void 0,
+      type = d3Callout,
+      textWrap = void 0,
+      notePadding = void 0,
+      annotationDispatcher = dispatch("subjectover", "subjectout", "subjectclick", "connectorover", "connectorout", "connectorclick", "noteover", "noteout", "noteclick"),
+      sel = void 0;
+
+  var annotation = function annotation(selection$$1) {
+    sel = selection$$1;
+    //TODO: check to see if this is still needed    
+    if (!editMode) {
+      selection$$1.selectAll("circle.handle").remove();
+    }
+
+    var translatedAnnotations = annotations.map(function (a) {
+      if (!a.type) {
+        a.type = type;
+      }
+      if (!a.disable) {
+        a.disable = disable;
+      }
+      return new Annotation(a);
+    });
+
+    collection = new AnnotationCollection({
+      annotations: translatedAnnotations,
+      accessors: accessors,
+      accessorsInverse: accessorsInverse,
+      ids: ids
+    });
+
+    var annotationG = selection$$1.selectAll('g').data([collection]);
+    annotationG.enter().append('g').attr('class', 'annotations');
+
+    var group = selection$$1.select('g.annotations');
+    newWithClass(group, collection.annotations, 'g', 'annotation');
+
+    var annotation = group.selectAll('g.annotation');
+
+    annotation.each(function (d) {
+      var a = select$1(this);
+      var position = d.position;
+
+      a.attr('class', 'annotation');
+
+      newWithClass(a, [d], 'g', 'annotation-connector');
+      newWithClass(a, [d], 'g', 'annotation-subject');
+      newWithClass(a, [d], 'g', 'annotation-note');
+      newWithClass(a.select('g.annotation-note'), [d], 'g', 'annotation-note-content');
+
+      d.type = new d.type({ a: a, annotation: d, textWrap: textWrap, notePadding: notePadding, editMode: editMode,
+        dispatcher: annotationDispatcher, accessors: accessors });
+      d.type.draw();
     });
   };
 
-  var bboxWithoutHandles = function bboxWithoutHandles(selection$$1) {
-    var selector$$1 = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : ':not(.handle)';
-
-    if (!selection$$1) {
-      return { x: 0, y: 0, width: 0, height: 0 };
-    }
-
-    return selection$$1.selectAll(selector$$1).nodes().reduce(function (p, c) {
-      var bbox = c.getBBox();
-      p.x = Math.min(p.x, bbox.x);
-      p.y = Math.min(p.y, bbox.y);
-      p.width = Math.max(p.width, bbox.width);
-      p.height += bbox.height;
-      return p;
-    }, { x: 0, y: 0, width: 0, height: 0 });
+  annotation.json = function () {
+    console.log('Annotations JSON was copied to your clipboard. Please note the annotation type is not JSON compatible. It appears in the objects array in the console, but not in the copied JSON.', collection.json);
+    window.copy(JSON.stringify(collection.json.map(function (a) {
+      delete a.type;return a;
+    })));
+    return annotation;
   };
 
-function annotation() {
-    var annotations = [],
-        collection = void 0,
-        context = void 0,
-        //TODO: add canvas functionality
-    disable = [],
-        accessors = {},
-        accessorsInverse = {},
-        editMode = false,
-        ids = void 0,
-        type = d3Callout,
-        textWrap = void 0,
-        notePadding = void 0,
-        annotationDispatcher = d3Dispatch.dispatch("subjectover", "subjectout", "subjectclick", "connectorover", "connectorout", "connectorclick", "noteover", "noteout", "noteclick"),
-        sel = void 0;
-
-    var annotation = function annotation(selection$$1) {
-      sel = selection$$1;
-      //TODO: check to see if this is still needed    
-      if (!editMode) {
-        selection$$1.selectAll("circle.handle").remove();
-      }
-
-      var translatedAnnotations = annotations.map(function (a) {
-        if (!a.type) {
-          a.type = type;
-        }
-        if (!a.disable) {
-          a.disable = disable;
-        }
-        return new Annotation(a);
+  annotation.update = function () {
+    if (annotations && collection) {
+      annotations = collection.annotations.map(function (a, i) {
+        a.type.draw();return a;
       });
-
-      collection = new AnnotationCollection({
-        annotations: translatedAnnotations,
-        accessors: accessors,
-        accessorsInverse: accessorsInverse,
-        ids: ids
-      });
-
-      var annotationG = selection$$1.selectAll('g').data([collection]);
-      annotationG.enter().append('g').attr('class', 'annotations');
-
-      var group = selection$$1.select('g.annotations');
-      newWithClass(group, collection.annotations, 'g', 'annotation');
-
-      var annotation = group.selectAll('g.annotation');
-
-      annotation.each(function (d) {
-        var a = d3Selection.select(this);        var position = d.position;
-
-        a.attr('class', 'annotation');
-
-        newWithClass(a, [d], 'g', 'annotation-connector');
-        newWithClass(a, [d], 'g', 'annotation-subject');
-        newWithClass(a, [d], 'g', 'annotation-note');
-        newWithClass(a.select('g.annotation-note'), [d], 'g', 'annotation-note-content');
-
-        d.type = new d.type({ a: a, annotation: d, textWrap: textWrap, notePadding: notePadding, editMode: editMode,
-          dispatcher: annotationDispatcher, accessors: accessors });
-        d.type.draw();
-      });
-    };
-
-    annotation.json = function () {
-      console.log('Annotations JSON was copied to your clipboard. Please note the annotation type is not JSON compatible. It appears in the objects array in the console, but not in the copied JSON.', collection.json);
-      window.copy(JSON.stringify(collection.json.map(function (a) {
-        delete a.type;return a;
-      })));
-      return annotation;
-    };
-
-    annotation.update = function () {
-      if (annotations && collection) {
-        annotations = collection.annotations.map(function (a, i) {
-          a.type.draw();return a;
-        });
-      }
-      return annotation;
-    };
-
-    annotation.updatedAccessors = function () {
-      collection.setPositionWithAccessors();
-      annotations = collection.annotations;
-      return annotation;
-    };
-
-    annotation.disable = function (_) {
-      if (!arguments.length) return disable;
-      disable = _;
-      if (collection) {
-        collection.updateDisable(disable);
-        annotations = collection.annotations;
-      }
-      return annotation;
-    };
-
-    annotation.textWrap = function (_) {
-      if (!arguments.length) return textWrap;
-      textWrap = _;
-      if (collection) {
-        collection.updateTextWrap(textWrap);
-        annotations = collection.annotations;
-      }
-      return annotation;
-    };
-
-    annotation.notePadding = function (_) {
-      if (!arguments.length) return notePadding;
-      notePadding = _;
-      if (collection) {
-        collection.updateNotePadding(notePadding);
-        annotations = collection.annotations;
-      }
-      return annotation;
-    };
-
-    annotation.type = function (_, settings) {
-      if (!arguments.length) return type;
-      type = _;
-      if (collection) {
-        collection.annotations.map(function (a) {
-
-          a.type.note && a.type.note.selectAll("*:not(.annotation-note-content)").remove();
-          a.type.noteContent && a.type.noteContent.selectAll("*").remove();
-          a.type.subject && a.type.subject.selectAll("*").remove();
-          a.type.connector && a.type.connector.selectAll("*").remove();
-          a.type.typeSettings = {};
-          a.type = type;
-
-          a.subject = settings && settings.subject || a.subject;
-          a.connector = settings && settings.connector || a.connector;
-          a.note = settings && settings.note || a.note;
-        });
-
-        annotations = collection.annotations;
-      }
-      return annotation;
-    };
-
-    annotation.annotations = function (_) {
-      if (!arguments.length) return collection && collection.annotations || annotations;
-      annotations = _;
-      return annotation;
-    };
-
-    annotation.context = function (_) {
-      if (!arguments.length) return context;
-      context = _;
-      return annotation;
-    };
-
-    annotation.accessors = function (_) {
-      if (!arguments.length) return accessors;
-      accessors = _;
-      return annotation;
-    };
-
-    annotation.accessorsInverse = function (_) {
-      if (!arguments.length) return accessorsInverse;
-      accessorsInverse = _;
-      return annotation;
-    };
-
-    annotation.ids = function (_) {
-      if (!arguments.length) return ids;
-      ids = _;
-      return annotation;
-    };
-
-    annotation.editMode = function (_) {
-      if (!arguments.length) return editMode;
-      editMode = _;
-
-      if (sel) {
-        sel.selectAll('g.annotation').classed('editable', editMode);
-      }
-
-      if (collection) {
-        collection.editMode(editMode);
-        annotations = collection.annotations;
-      }
-      return annotation;
-    };
-
-    annotation.collection = function (_) {
-      if (!arguments.length) return collection;
-      collection = _;
-      return annotation;
-    };
-
-    annotation.on = function () {
-      var value = annotationDispatcher.on.apply(annotationDispatcher, arguments);
-      return value === annotationDispatcher ? annotation : value;
-    };
-
+    }
     return annotation;
-  }
+  };
+
+  annotation.updatedAccessors = function () {
+    collection.setPositionWithAccessors();
+    annotations = collection.annotations;
+    return annotation;
+  };
+
+  annotation.disable = function (_) {
+    if (!arguments.length) return disable;
+    disable = _;
+    if (collection) {
+      collection.updateDisable(disable);
+      annotations = collection.annotations;
+    }
+    return annotation;
+  };
+
+  annotation.textWrap = function (_) {
+    if (!arguments.length) return textWrap;
+    textWrap = _;
+    if (collection) {
+      collection.updateTextWrap(textWrap);
+      annotations = collection.annotations;
+    }
+    return annotation;
+  };
+
+  annotation.notePadding = function (_) {
+    if (!arguments.length) return notePadding;
+    notePadding = _;
+    if (collection) {
+      collection.updateNotePadding(notePadding);
+      annotations = collection.annotations;
+    }
+    return annotation;
+  };
+
+  annotation.type = function (_, settings) {
+    if (!arguments.length) return type;
+    type = _;
+    if (collection) {
+      collection.annotations.map(function (a) {
+
+        a.type.note && a.type.note.selectAll("*:not(.annotation-note-content)").remove();
+        a.type.noteContent && a.type.noteContent.selectAll("*").remove();
+        a.type.subject && a.type.subject.selectAll("*").remove();
+        a.type.connector && a.type.connector.selectAll("*").remove();
+        a.type.typeSettings = {};
+        a.type = type;
+
+        a.subject = settings && settings.subject || a.subject;
+        a.connector = settings && settings.connector || a.connector;
+        a.note = settings && settings.note || a.note;
+      });
+
+      annotations = collection.annotations;
+    }
+    return annotation;
+  };
+
+  annotation.annotations = function (_) {
+    if (!arguments.length) return collection && collection.annotations || annotations;
+    annotations = _;
+    return annotation;
+  };
+
+  annotation.context = function (_) {
+    if (!arguments.length) return context;
+    context = _;
+    return annotation;
+  };
+
+  annotation.accessors = function (_) {
+    if (!arguments.length) return accessors;
+    accessors = _;
+    return annotation;
+  };
+
+  annotation.accessorsInverse = function (_) {
+    if (!arguments.length) return accessorsInverse;
+    accessorsInverse = _;
+    return annotation;
+  };
+
+  annotation.ids = function (_) {
+    if (!arguments.length) return ids;
+    ids = _;
+    return annotation;
+  };
+
+  annotation.editMode = function (_) {
+    if (!arguments.length) return editMode;
+    editMode = _;
+
+    if (sel) {
+      sel.selectAll('g.annotation').classed('editable', editMode);
+    }
+
+    if (collection) {
+      collection.editMode(editMode);
+      annotations = collection.annotations;
+    }
+    return annotation;
+  };
+
+  annotation.collection = function (_) {
+    if (!arguments.length) return collection;
+    collection = _;
+    return annotation;
+  };
+
+  annotation.on = function () {
+    var value = annotationDispatcher.on.apply(annotationDispatcher, arguments);
+    return value === annotationDispatcher ? annotation : value;
+  };
+
+  return annotation;
+}
 
 // original code: https://bl.ocks.org/mbostock/3883245
 
@@ -7123,23 +7881,23 @@ tsv$1("data.tsv", function (d) {
 
     var makeAnnotations = annotation().type(d3CalloutCircle).accessors({
         x: function x(d) {
-            return _x(parseTime(d.date));
+            return _x(d.date);
         },
         y: function y(d) {
             return _y(d.close);
         }
     }).accessorsInverse({
         date: function date(d) {
-            return timeFormat$$1(_x.invert(d.x));
+            return _x.invert(d.x);
         },
         close: function close(d) {
             return _y.invert(d.y);
         }
     }).annotations([{
         note: { label: "This is awesome!", title: "Awesome" },
-        data: data[100],
-        dy: 137,
-        dx: 162,
+        data: data[1000],
+        dy: 200,
+        dx: 80,
         subject: {
             radius: 50,
             radiusPadding: 5
